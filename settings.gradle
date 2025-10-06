@@ -1,0 +1,21 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+/** Project Name **/
+rootProject.name = "SUIT-app"
+
+/** Applications **/
+// Keep only the SemanticSegmentation module
+include ':SemanticSegmentation'
