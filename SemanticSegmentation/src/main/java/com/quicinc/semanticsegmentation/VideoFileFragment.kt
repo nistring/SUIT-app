@@ -2,6 +2,8 @@ package com.quicinc.semanticsegmentation
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Rect
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
@@ -11,21 +13,72 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
+import java.util.concurrent.atomic.AtomicReference
 
 class VideoFileFragment : Fragment() {
     private var segmentor: TfLiteSegmentor? = null
     private var videoUri: Uri? = null
     private var fragmentRender: FragmentRender? = null
-    private var bgThread: HandlerThread? = null
-    private var bgHandler: Handler? = null
 
     // Keep array of hidden states across frames for the running video (may contain 4 hidden tensors)
     private var hiddenState: Array<FloatArray>? = null
 
-    companion object {
+    // --- Added: three-stage pipeline state ---
+    private var inputThread: HandlerThread? = null
+    private var inputHandler: Handler? = null
+    private var inferThread: HandlerThread? = null
+    private var inferHandler: Handler? = null
+    private val latestPre = AtomicReference<TfLiteSegmentor.Preprocessed?>()
+    @Volatile private var pipelineRunning = false
+    // -----------------------------------------
+
+    companion object{
         fun create(seg: TfLiteSegmentor, uri: Uri) = VideoFileFragment().apply {
             segmentor = seg
             videoUri = uri
+        }
+    }
+
+    // Allow swapping the segmentor at runtime (restart inferencer only; keep input stream)
+    fun setSegmentor(seg: TfLiteSegmentor) {
+        val wasRunning = pipelineRunning
+        segmentor = seg
+        // Drop any stale frames and hidden state
+        latestPre.set(null)
+        hiddenState = null
+        if (wasRunning) {
+            // Restart only the inferencer loop; keep producer/input thread alive
+            inferHandler?.removeCallbacksAndMessages(null)
+            inferThread?.quitSafely()
+            inferThread = HandlerThread("VideoInfer").also { it.start() }
+            inferHandler = Handler(inferThread!!.looper)
+            inferHandler?.post(object : Runnable {
+                override fun run() {
+                    if (!pipelineRunning) return
+                    val segLoc = segmentor ?: return
+                    val pre = latestPre.getAndSet(null)
+                    if (pre != null) {
+                        try {
+                            val inf = segLoc.infer(pre, hiddenState)
+                            hiddenState = inf.newHidden
+                            val fr = fragmentRender ?: return
+                            val outForDisplay: Bitmap = if (pre.cropRectInOriginal != null && pre.originalForDisplay != null) {
+                                val rect: Rect = pre.cropRectInOriginal
+                                val cropSeg = segLoc.postprocessToBitmap(inf, rect.width(), rect.height(), pre.sensorOrientation)
+                                val composed = Bitmap.createBitmap(pre.originalForDisplay.width, pre.originalForDisplay.height, Bitmap.Config.ARGB_8888)
+                                val canvas = Canvas(composed)
+                                canvas.drawBitmap(pre.originalForDisplay, 0f, 0f, null)
+                                canvas.drawBitmap(cropSeg, rect.left.toFloat(), rect.top.toFloat(), null)
+                                composed
+                            } else {
+                                segLoc.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
+                            }
+                            fr.post { fr.render(outForDisplay, 0f, segLoc.lastInferTime, segLoc.lastPreTime, segLoc.lastPostTime) }
+                        } catch (_: Exception) { }
+                    }
+                    inferHandler?.post(this)
+                }
+            })
         }
     }
 
@@ -40,75 +93,97 @@ class VideoFileFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
-        startBg()
-        startProcessing()
+        startPipeline()
     }
 
     override fun onPause() {
         super.onPause()
-        stopBg()
+        stopPipeline()
     }
 
-    private fun startBg() { bgThread = HandlerThread("VideoFile").also { it.start() }; bgHandler = Handler(bgThread!!.looper) }
-    private fun stopBg() { bgThread?.quitSafely(); bgThread = null; bgHandler = null }
-
-    private fun startProcessing() {
+    private fun startPipeline() {
         val seg = segmentor ?: return
         val uri = videoUri ?: return
         val ctx: Context = requireContext()
         hiddenState = null
+        if (pipelineRunning) return
+        pipelineRunning = true
 
-        bgHandler?.post {
+        // Threads
+        inputThread = HandlerThread("VideoInput").also { it.start() }
+        inputHandler = Handler(inputThread!!.looper)
+        inferThread = HandlerThread("VideoInfer").also { it.start() }
+        inferHandler = Handler(inferThread!!.looper)
+
+        // Producer
+        inputHandler?.post {
             val mmr = MediaMetadataRetriever()
             try {
                 mmr.setDataSource(ctx, uri)
                 val durationMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                val stepMs = 100L // ~10 fps
-                val fr = fragmentRender
-                val render: (Bitmap) -> Unit = { bmp ->
-                    fr?.post { fr.render(bmp, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime) }
-                }
-
+                val stepMs = 100L
                 var t = 0L
-                while (t < durationMs) {
+                while (pipelineRunning && t < durationMs) {
                     try {
-                        mmr.getFrameAtTime(t * 1000, MediaMetadataRetriever.OPTION_CLOSEST)?.let { bmp ->
-                            val cropWithRect = fr?.getCroppedBitmapWithRect(bmp)
-                            if (cropWithRect != null) {
-                                val (cropped, rect) = cropWithRect
-                                val (outCrop, newHidden) = seg.predict(cropped, 0, hiddenState)
-                                hiddenState = newHidden
-                                try {
-                                    val display = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
-                                    val canvas = android.graphics.Canvas(display)
-                                    canvas.drawBitmap(bmp, 0f, 0f, null)
-                                    val out = if (outCrop.width == rect.width() && outCrop.height == rect.height())
-                                        outCrop
-                                    else
-                                        Bitmap.createScaledBitmap(outCrop, rect.width(), rect.height(), true)
-                                    canvas.drawBitmap(out, rect.left.toFloat(), rect.top.toFloat(), null)
-                                    render(display)
-                                } catch (_: Exception) {
-                                    val (outFull, newHiddenFull) = seg.predict(bmp, 0, hiddenState)
-                                    hiddenState = newHiddenFull
-                                    render(outFull)
+                        if (latestPre.get() == null) { // drop if infer not consumed
+                            mmr.getFrameAtTime(t * 1000, MediaMetadataRetriever.OPTION_CLOSEST)?.let { bmp ->
+                                val fr = fragmentRender
+                                val cropWithRect = fr?.getCroppedBitmapWithRect(bmp)
+                                if (cropWithRect != null) {
+                                    val (cropped, rect) = cropWithRect
+                                    latestPre.set(seg.preprocess(cropped, 0, originalForDisplay = bmp, cropRectInOriginal = rect))
+                                } else {
+                                    latestPre.set(seg.preprocess(bmp, 0, originalForDisplay = bmp, cropRectInOriginal = null))
                                 }
-                            } else {
-                                val (out, newHidden) = seg.predict(bmp, 0, hiddenState)
-                                hiddenState = newHidden
-                                render(out)
                             }
                         }
-                    } catch (_: Exception) {
-                        // ignore frame-level errors
-                    }
+                    } catch (_: Exception) { }
                     t += stepMs
+                    try { Thread.sleep(stepMs) } catch (_: InterruptedException) { }
                 }
-            } catch (_: Exception) {
-                // ignore setup errors
-            } finally {
-                try { mmr.release() } catch (_: Exception) {}
-            }
+            } catch (_: Exception) { }
+            finally { try { mmr.release() } catch (_: Exception) {} }
         }
+
+        // Inferencer + postprocess on same thread
+        inferHandler?.post(object : Runnable {
+            override fun run() {
+                if (!pipelineRunning) return
+                val pre = latestPre.getAndSet(null)
+                if (pre != null) {
+                    try {
+                        val inf = seg.infer(pre, hiddenState)
+                        hiddenState = inf.newHidden
+                        val fr = fragmentRender ?: return
+                        val outForDisplay: Bitmap = if (pre.cropRectInOriginal != null && pre.originalForDisplay != null) {
+                            val rect: Rect = pre.cropRectInOriginal
+                            val cropSeg = seg.postprocessToBitmap(inf, rect.width(), rect.height(), pre.sensorOrientation)
+                            val composed = Bitmap.createBitmap(pre.originalForDisplay.width, pre.originalForDisplay.height, Bitmap.Config.ARGB_8888)
+                            val canvas = Canvas(composed)
+                            canvas.drawBitmap(pre.originalForDisplay, 0f, 0f, null)
+                            canvas.drawBitmap(cropSeg, rect.left.toFloat(), rect.top.toFloat(), null)
+                            composed
+                        } else {
+                            seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
+                        }
+                        fr.post { fr.render(outForDisplay, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime) }
+                    } catch (_: Exception) { }
+                }
+                inferHandler?.post(this)
+            }
+        })
+    }
+
+    private fun stopPipeline() {
+        pipelineRunning = false
+        // Drain queued tasks to prevent duplicate processing after model swap
+        inputHandler?.removeCallbacksAndMessages(null)
+        inferHandler?.removeCallbacksAndMessages(null)
+        // Clear any pending preprocessed frame and hidden state
+        latestPre.set(null)
+        hiddenState = null
+        // Now stop threads
+        inputThread?.quitSafely(); inputThread = null; inputHandler = null
+        inferThread?.quitSafely(); inferThread = null; inferHandler = null
     }
 }

@@ -11,13 +11,14 @@ import java.util.Set;
 public class AIHubDefaults {
     // Delegates enabled to replicate AI Hub's defaults on Qualcomm devices.
     public static final Set<TFLiteHelpers.DelegateType> enabledDelegates = new HashSet<>(Arrays.asList(
-            TFLiteHelpers.DelegateType.QNN_NPU,
-            TFLiteHelpers.DelegateType.GPUv2
+        TFLiteHelpers.DelegateType.QNN_NPU,
+        TFLiteHelpers.DelegateType.NNAPI,
+        TFLiteHelpers.DelegateType.GPUv2
     ));
 
     // Number of threads AI Hub uses by default for layers running on CPU.
     // https://app.aihub.qualcomm.com/docs/hub/api.html#profile-inference-options
-    public static final int numCPUThreads = Runtime.getRuntime().availableProcessors() / 2;
+    public static final int numCPUThreads = Math.max(4, Runtime.getRuntime().availableProcessors());
 
     // The default delegate registry order for AI Hub.
     // For more details, see the JavaDoc for TFLiteHelpers::CreateInterpreterAndDelegatesFromOptions.
@@ -27,7 +28,7 @@ public class AIHubDefaults {
             // Similar to AI Hub "compute_unit=all", or "compute_unit=npu,gpu,cpu" on QC devices that support QNN
             // AI Hub sets some GPUv2 settings that are not accessible via the Java API.
             { TFLiteHelpers.DelegateType.QNN_NPU, TFLiteHelpers.DelegateType.GPUv2 },
-
+            
             // 2. GPUv2 + XNNPack
             // https://app.aihub.qualcomm.com/docs/hub/api.html#profile-inference-options
             // Similar to AI Hub "compute_unit=gpu" on all devices

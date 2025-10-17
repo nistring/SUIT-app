@@ -105,6 +105,9 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
     @SuppressLint("DefaultLocale")
     override fun onDraw(canvas: Canvas) {
         mLock.lock()
+        // Fill background black
+        canvas.drawColor(Color.BLACK)
+
         val bmp = mBitmap
         if (bmp != null) {
             val insetWidth: Int
@@ -125,6 +128,7 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
             mTargetRect.right = offsetWidth + insetWidth
             mTargetRect.bottom = offsetHeight + insetHeight
             canvas.drawBitmap(bmp, null, mTargetRect, null)
+
             // Initialize bbox if empty: center 60% of the rendered image
             if (bbox.width() == 0f && bbox.height() == 0f && mTargetRect.width() > 0 && mTargetRect.height() > 0) {
                 val padW = mTargetRect.width() * 0.2f
@@ -135,18 +139,24 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
                 bbox.bottom = mTargetRect.bottom - padH
             }
 
-            // Draw bounding box + corner handles
+            // Draw bounding box + corner handles (kept as-is)
             if (bbox.width() > 0f && bbox.height() > 0f) {
                 canvas.drawRect(bbox, boxPaint)
-                // handles: top-left and bottom-right
                 canvas.drawCircle(bbox.left, bbox.top, handleRadius, boxPaint)
                 canvas.drawCircle(bbox.right, bbox.bottom, handleRadius, boxPaint)
             }
-            // Draw debug text in top-left of the view (horizontal)
-            canvas.drawText("FPS: ${String.format("%.0f", fps)}", 15f, 50f, mTextColor)
-            canvas.drawText("Preprocess: ${String.format("%.0f", preprocessTime / 1_000_000f)}ms", 15f, 55f + 60f * 2, mTextColor)
-            canvas.drawText("Infer: ${String.format("%.0f", inferTime / 1_000_000f)}ms", 15f, 55f + 60f * 3, mTextColor)
-            canvas.drawText("Postprocess: ${String.format("%.0f", postprocessTime / 1_000_000f)}ms", 15f, 55f + 60f * 4, mTextColor)
+            // Draw timing text block anchored to bottom-left of the rendered image
+            val lines = 4
+            val lineSpacing = 60f
+            val x = mTargetRect.left + 5f
+            val topY = mTargetRect.bottom - 15f - (lines - 1) * lineSpacing
+            canvas.drawText("FPS: ${String.format("%.0f", fps)}", x, topY + lineSpacing * 0, mTextColor)
+            canvas.drawText("Preprocess: ${String.format("%.0f", preprocessTime / 1_000_000f)}ms", x, topY + lineSpacing * 1, mTextColor)
+            canvas.drawText("Infer: ${String.format("%.0f", inferTime / 1_000_000f)}ms", x, topY + lineSpacing * 2, mTextColor)
+            canvas.drawText("Postprocess: ${String.format("%.0f", postprocessTime / 1_000_000f)}ms", x, topY + lineSpacing * 3, mTextColor)
+            // Overlay title and author (no title box)
+            canvas.drawText("Brachial plexus segmentation", 5f, 55f, mTextColor)
+            canvas.drawText("Author: Donghyeon Baek", 5f, 55f + 60f, mTextColor)
         }
         mLock.unlock()
     }

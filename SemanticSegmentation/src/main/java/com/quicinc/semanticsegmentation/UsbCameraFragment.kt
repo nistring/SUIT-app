@@ -3,7 +3,6 @@ package com.quicinc.semanticsegmentation
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.os.Bundle
@@ -18,6 +17,7 @@ import androidx.fragment.app.Fragment
 import org.opencv.android.OpenCVLoader
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class UsbCameraFragment : Fragment() {
     private lateinit var textureView: TextureView
@@ -35,10 +35,22 @@ class UsbCameraFragment : Fragment() {
     // array of hidden states (one per RNN output)
     private var hiddenState: Array<FloatArray>? = null
 
+    // --- Added: three-stage pipeline state ---
+    private val latestPre = AtomicReference<TfLiteSegmentor.Preprocessed?>()
+    private var inferThread: HandlerThread? = null
+    private var inferHandler: Handler? = null
+    private var displayThread: HandlerThread? = null
+    private var displayHandler: Handler? = null
+    @Volatile private var pipelineRunning = false
+    // -----------------------------------------
+
     companion object { fun create(seg: TfLiteSegmentor) = UsbCameraFragment().apply { segmentor = seg } }
 
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
-        override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) { openCamera() }
+        override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+            // Open camera only when we are in running state (manual start)
+            if (pipelineRunning) openCamera()
+        }
         override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {}
         override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean = true
         override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
@@ -57,13 +69,11 @@ class UsbCameraFragment : Fragment() {
     }
 
     override fun onResume() { 
-        super.onResume(); 
-        // Reset hidden state when starting/resuming camera session
+        super.onResume()
         hiddenState = null
-        startBackgroundThread(); 
-        if (textureView.isAvailable) openCamera() else textureView.surfaceTextureListener = surfaceListener 
+        textureView.surfaceTextureListener = surfaceListener
     }
-    override fun onPause() { closeCamera(); stopBackgroundThread(); super.onPause() }
+    override fun onPause() { closeCamera(); stopPipeline(); stopBackgroundThread(); super.onPause() }
 
     private fun requestCameraPermission() { registerForActivityResult(ActivityResultContracts.RequestPermission()) { }.launch(Manifest.permission.CAMERA) }
 
@@ -114,6 +124,41 @@ class UsbCameraFragment : Fragment() {
     private fun startBackgroundThread() { backgroundThread = HandlerThread("UsbCameraBackground").also { it.start() }; backgroundHandler = Handler(backgroundThread!!.looper) }
     private fun stopBackgroundThread() { backgroundThread?.quitSafely(); backgroundThread=null; backgroundHandler=null }
 
+    private fun startPipeline() {
+        if (pipelineRunning) return
+        pipelineRunning = true
+        inferThread = HandlerThread("UsbCamInfer").also { it.start() }
+        inferHandler = Handler(inferThread!!.looper)
+        // removed display thread
+        inferHandler?.post(object : Runnable {
+            override fun run() {
+                if (!pipelineRunning) return
+                val seg = segmentor ?: return
+                val pre = latestPre.getAndSet(null)
+                if (pre != null) {
+                    try {
+                        val inf = seg.infer(pre, hiddenState)
+                        hiddenState = inf.newHidden
+                        val fr = fragmentRender
+                        val outBmp = seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
+                        fr.post { fr.render(outBmp, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime) }
+                    } catch (_: Exception) { }
+                }
+                inferHandler?.post(this)
+            }
+        })
+    }
+
+    private fun stopPipeline() {
+        pipelineRunning = false
+        // Drain queued tasks to prevent duplicate processing after model swap
+        inferHandler?.removeCallbacksAndMessages(null)
+        inferThread?.quitSafely(); inferThread = null; inferHandler = null
+        // removed display thread stop
+        latestPre.set(null)
+        hiddenState = null
+    }
+
     private val stateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) { cameraLock.release(); cameraDevice = camera; createPreviewSession() }
         override fun onDisconnected(camera: CameraDevice) { cameraLock.release(); camera.close(); cameraDevice=null }
@@ -137,11 +182,44 @@ class UsbCameraFragment : Fragment() {
     private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
             val seg = segmentor ?: return
-            val bmp: Bitmap = textureView.bitmap ?: return
-            // pass and update hidden state array
-            val (outBmp, newHidden) = seg.predict(bmp, sensorOrientation, hiddenState)
-            hiddenState = newHidden
-            fragmentRender.render(outBmp, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime)
+            if (latestPre.get() != null) return // drop if pending
+            textureView.bitmap?.let { bmp ->
+                try { latestPre.set(seg.preprocess(bmp, sensorOrientation)) } catch (_: Exception) { }
+            }
         }
+    }
+
+    // Public API: start manually from Activity button
+    fun startManually() {
+        val act = activity ?: return
+        if (pipelineRunning && cameraDevice != null && captureSession != null) return
+        if (ContextCompat.checkSelfPermission(act, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestCameraPermission(); return
+        }
+        hiddenState = null
+        if (backgroundThread == null) startBackgroundThread()
+        startPipeline()
+        if (textureView.isAvailable) openCamera() else textureView.surfaceTextureListener = surfaceListener
+    }
+
+    // Public API: stop and release resources
+    fun stopManually() {
+        closeCamera()
+        stopPipeline()
+        stopBackgroundThread()
+        hiddenState = null
+    }
+
+    // Allow swapping the segmentor at runtime
+    fun setSegmentor(seg: TfLiteSegmentor) {
+        val wasRunning = pipelineRunning
+        // Swap model without restarting input stream (camera stays open)
+        segmentor = seg
+        // Reset state and restart only inferencer
+        inferHandler?.removeCallbacksAndMessages(null)
+        latestPre.set(null)
+        hiddenState = null
+        stopPipeline() // stops only infer thread per implementation
+        if (wasRunning) startPipeline()
     }
 }

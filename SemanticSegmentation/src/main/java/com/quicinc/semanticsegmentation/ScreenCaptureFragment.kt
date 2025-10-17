@@ -2,7 +2,6 @@ package com.quicinc.semanticsegmentation
 
 import android.app.Activity
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -15,11 +14,11 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.DisplayMetrics
 import android.view.LayoutInflater
-import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
+import java.util.concurrent.atomic.AtomicReference
 
 class ScreenCaptureFragment : Fragment() {
     private var segmentor: TfLiteSegmentor? = null
@@ -33,9 +32,12 @@ class ScreenCaptureFragment : Fragment() {
     // Single hidden state array carried across frames (may contain multiple tensors)
     private var hiddenState: Array<FloatArray>? = null
 
-    companion object {
-        fun create(seg: TfLiteSegmentor) = ScreenCaptureFragment().apply { segmentor = seg }
-    }
+    // --- Added: three-stage pipeline state ---
+    private val latestPre = AtomicReference<TfLiteSegmentor.Preprocessed?>()
+    private var inferThread: HandlerThread? = null
+    private var inferHandler: Handler? = null
+    @Volatile private var pipelineRunning = false
+    // -----------------------------------------
 
     private val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -85,18 +87,18 @@ class ScreenCaptureFragment : Fragment() {
         val height = metrics.heightPixels
         val density = metrics.densityDpi
 
+        // Start pipeline threads
+        startPipeline()
+
         imageReader = ImageReader.newInstance(width, height, android.graphics.PixelFormat.RGBA_8888, 2)
         imageReader?.setOnImageAvailableListener({ reader ->
             val img = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                val bmp = imageToBitmap(img)
-                // Pass and update hidden state array
-                val (outBmp, newHidden) = seg.predict(bmp, 0, hiddenState)
-                hiddenState = newHidden
-                fragmentRender?.post { fragmentRender?.render(outBmp, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime) }
-            } finally {
-                img.close()
-            }
+                if (latestPre.get() == null) { // drop if pending
+                    val bmp = imageToBitmap(img)
+                    latestPre.set(seg.preprocess(bmp, 0))
+                }
+            } finally { img.close() }
         }, bgHandler)
 
         virtualDisplay = projection?.createVirtualDisplay(
@@ -117,6 +119,40 @@ class ScreenCaptureFragment : Fragment() {
         projection?.stop(); projection = null
         // clear hidden state on stop
         hiddenState = null
+        // also clear any pending preprocessed frame
+        latestPre.set(null)
+        stopPipeline()
+    }
+
+    private fun startPipeline() {
+        if (pipelineRunning) return
+        pipelineRunning = true
+        inferThread = HandlerThread("ScreenInfer").also { it.start() }
+        inferHandler = Handler(inferThread!!.looper)
+
+        inferHandler?.post(object : Runnable {
+            override fun run() {
+                if (!pipelineRunning) return
+                val seg = segmentor ?: return
+                val pre = latestPre.getAndSet(null)
+                if (pre != null) {
+                    try {
+                        val inf = seg.infer(pre, hiddenState)
+                        hiddenState = inf.newHidden
+                        val outBmp = seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
+                        fragmentRender?.post { fragmentRender?.render(outBmp, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime) }
+                    } catch (_: Exception) { }
+                }
+                inferHandler?.post(this)
+            }
+        })
+    }
+
+    private fun stopPipeline() {
+        pipelineRunning = false
+        // Drain queued tasks to prevent duplicate processing after model swap
+        inferHandler?.removeCallbacksAndMessages(null)
+        inferThread?.quitSafely(); inferThread = null; inferHandler = null
     }
 
     private fun imageToBitmap(image: Image): Bitmap {
@@ -131,5 +167,17 @@ class ScreenCaptureFragment : Fragment() {
         buffer.rewind()
         bitmap.copyPixelsFromBuffer(buffer)
         return Bitmap.createBitmap(bitmap, 0, 0, width, height)
+    }
+
+    // Allow swapping the segmentor at runtime (restart pipeline if running)
+    fun setSegmentor(seg: TfLiteSegmentor) {
+        val wasRunning = pipelineRunning
+        segmentor = seg
+        // Drop any stale work and restart only the inferencer
+        inferHandler?.removeCallbacksAndMessages(null)
+        latestPre.set(null)
+        hiddenState = null
+        stopPipeline() // stops only infer thread
+        if (wasRunning && isResumed) startPipeline()
     }
 }
