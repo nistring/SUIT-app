@@ -20,16 +20,26 @@ import java.util.concurrent.locks.ReentrantLock
 class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, attrs) {
     private val mLock = ReentrantLock()
     private var mBitmap: Bitmap? = null
+    // New: keep the original image for display when inference is hidden
+    private var mOriginalBitmap: Bitmap? = null
     private val mTargetRect = Rect()
+    // New: separate display rect from mapping rect; mTargetRect remains mapping rect used for bbox<->original mapping
+    private val mDisplayRect = Rect()
+    // New: full mode + reference source size (original frame) for mapping rect in full mode
+    @Volatile private var fullMode: Boolean = false
+    // New: toggle to show/hide inference output
+    @Volatile private var showInference: Boolean = true
+    private var refW: Int = 0
+    private var refH: Int = 0
     private var fps: Float = 0f
-    private var inferTime: Long = 0
-    private var preprocessTime: Long = 0
-    private var postprocessTime: Long = 0
+    // replace timing fields
+    private var consumerTime: Long = 0
+    private var producerTime: Long = 0
     private val mTextColor = Paint().apply {
         color = Color.WHITE
         typeface = Typeface.DEFAULT_BOLD
         style = Paint.Style.FILL
-        textSize = 50f
+        textSize = 40f
     }
 
     // Bounding box state (view coordinates)
@@ -45,12 +55,40 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
     private var lastTouchX = 0f
     private var lastTouchY = 0f
 
-    fun render(image: Bitmap, fps: Float, inferTime: Long, preprocessTime: Long, postprocessTime: Long) {
+    // Public API to toggle/query full mode
+    fun setFullMode(enabled: Boolean) {
+        fullMode = enabled
+        postInvalidate()
+    }
+    fun isFullMode(): Boolean = fullMode
+
+    // New: Public API to toggle/query inference visibility
+    fun setShowInference(enabled: Boolean) {
+        showInference = enabled
+        postInvalidate()
+    }
+    fun isShowInference(): Boolean = showInference
+
+    // Update the original source frame size so mapping rect stays correct when showing only crop
+    fun updateReferenceSize(w: Int, h: Int) {
+        mLock.lock()
+        try {
+            if (w > 0 && h > 0) {
+                refW = w
+                refH = h
+            }
+        } finally {
+            mLock.unlock()
+        }
+    }
+
+    // Update signature: accept both result and original
+    fun render(image: Bitmap, original: Bitmap?, fps: Float, consumerTime: Long, producerTime: Long) {
         this.mBitmap = image
+        this.mOriginalBitmap = original
         this.fps = fps
-        this.inferTime = inferTime
-        this.preprocessTime = preprocessTime
-        this.postprocessTime = postprocessTime
+        this.consumerTime = consumerTime
+        this.producerTime = producerTime
         postInvalidate()
     }
 
@@ -105,31 +143,98 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
     @SuppressLint("DefaultLocale")
     override fun onDraw(canvas: Canvas) {
         mLock.lock()
-        // Fill background black
         canvas.drawColor(Color.BLACK)
 
-        val bmp = mBitmap
-        if (bmp != null) {
-            val insetWidth: Int
-            val insetHeight: Int
-            val canvasRatio = width.toFloat() / height.toFloat()
-            val bitmapRatio = bmp.width.toFloat() / bmp.height.toFloat()
-            if (canvasRatio > bitmapRatio) {
-                insetHeight = height
-                insetWidth = (height.toFloat() * bitmapRatio).toInt()
-            } else {
-                insetWidth = width
-                insetHeight = (width.toFloat() / bitmapRatio).toInt()
-            }
-            val offsetWidth = (width - insetWidth) / 2
-            val offsetHeight = (height - insetHeight) / 2
-            mTargetRect.left = offsetWidth
-            mTargetRect.top = offsetHeight
-            mTargetRect.right = offsetWidth + insetWidth
-            mTargetRect.bottom = offsetHeight + insetHeight
-            canvas.drawBitmap(bmp, null, mTargetRect, null)
+        // Decide which bitmap to draw in normal mode; full mode handled below
+        val normalToDraw: Bitmap? = if (showInference) mBitmap else (mOriginalBitmap ?: mBitmap)
 
-            // Initialize bbox if empty: center 60% of the rendered image
+        // Compute display rect and mapping rect
+        val bmp = if (fullMode) (mBitmap ?: normalToDraw) else normalToDraw
+        if (bmp != null) {
+            // Compute display rect (what we draw) and mapping rect (used by bbox/cropping)
+            if (!fullMode) {
+                // Normal mode: display rect == mapping rect based on the currently displayed bitmap
+                val canvasRatio = width.toFloat() / height.toFloat()
+                val bitmapRatio = bmp.width.toFloat() / bmp.height.toFloat()
+                val insetWidth: Int
+                val insetHeight: Int
+                if (canvasRatio > bitmapRatio) {
+                    insetHeight = height
+                    insetWidth = (height.toFloat() * bitmapRatio).toInt()
+                } else {
+                    insetWidth = width
+                    insetHeight = (width.toFloat() / bitmapRatio).toInt()
+                }
+                val offsetWidth = (width - insetWidth) / 2
+                val offsetHeight = (height - insetHeight) / 2
+                mDisplayRect.set(offsetWidth, offsetHeight, offsetWidth + insetWidth, offsetHeight + insetHeight)
+                mTargetRect.set(mDisplayRect)
+            } else {
+                // Full mode (keep previous mapping using refW/refH)
+                val canvasRatio = width.toFloat() / height.toFloat()
+                val bmpRatio = bmp.width.toFloat() / bmp.height.toFloat()
+                if (canvasRatio > bmpRatio) {
+                    val insetHeight = height
+                    val insetWidth = (height.toFloat() * bmpRatio).toInt()
+                    val offsetWidth = (width - insetWidth) / 2
+                    mDisplayRect.set(offsetWidth, 0, offsetWidth + insetWidth, height)
+                } else {
+                    val insetWidth = width
+                    val insetHeight = (width.toFloat() / bmpRatio).toInt()
+                    val offsetHeight = (height - insetHeight) / 2
+                    mDisplayRect.set(0, offsetHeight, width, offsetHeight + insetHeight)
+                }
+                if (refW > 0 && refH > 0) {
+                    val refRatio = refW.toFloat() / refH.toFloat()
+                    if (canvasRatio > refRatio) {
+                        val insetHeight = height
+                        val insetWidth = (height.toFloat() * refRatio).toInt()
+                        val offsetWidth = (width - insetWidth) / 2
+                        mTargetRect.set(offsetWidth, 0, offsetWidth + insetWidth, height)
+                    } else {
+                        val insetWidth = width
+                        val insetHeight = (width.toFloat() / refRatio).toInt()
+                        val offsetHeight = (height - insetHeight) / 2
+                        mTargetRect.set(0, offsetHeight, width, offsetHeight + insetHeight)
+                    }
+                } else {
+                    mTargetRect.set(mDisplayRect)
+                }
+            }
+
+            if (!fullMode) {
+                // Normal mode: draw chosen bitmap
+                canvas.drawBitmap(bmp, null, mDisplayRect, null)
+            } else {
+                // Full mode:
+                if (showInference || mOriginalBitmap == null) {
+                    // Show inference (e.g., cropped seg) as before
+                    canvas.drawBitmap(bmp, null, mDisplayRect, null)
+                } else {
+                    // Hide in full mode: draw original cropped region scaled into display rect
+                    val orig = mOriginalBitmap
+                    if (orig != null && bbox.width() > 0 && bbox.height() > 0 && mTargetRect.width() > 0 && mTargetRect.height() > 0) {
+                        // Map bbox (view coords) -> original coords using mapping rect (mTargetRect)
+                        val scaleX = (refW.takeIf { it > 0 } ?: orig.width).toFloat() / mTargetRect.width().toFloat()
+                        val scaleY = (refH.takeIf { it > 0 } ?: orig.height).toFloat() / mTargetRect.height().toFloat()
+                        val leftF = (bbox.left - mTargetRect.left) * scaleX
+                        val topF = (bbox.top - mTargetRect.top) * scaleY
+                        val rightF = (bbox.right - mTargetRect.left) * scaleX
+                        val bottomF = (bbox.bottom - mTargetRect.top) * scaleY
+                        val left = leftF.toInt().coerceIn(0, orig.width - 1)
+                        val top = topF.toInt().coerceIn(0, orig.height - 1)
+                        val right = rightF.toInt().coerceIn(left + 1, orig.width)
+                        val bottom = bottomF.toInt().coerceIn(top + 1, orig.height)
+                        val srcRect = Rect(left, top, right, bottom)
+                        canvas.drawBitmap(orig, srcRect, mDisplayRect, null)
+                    } else {
+                        // Fallback
+                        canvas.drawBitmap(orig ?: bmp, null, mDisplayRect, null)
+                    }
+                }
+            }
+
+            // Initialize bbox if empty
             if (bbox.width() == 0f && bbox.height() == 0f && mTargetRect.width() > 0 && mTargetRect.height() > 0) {
                 val padW = mTargetRect.width() * 0.2f
                 val padH = mTargetRect.height() * 0.2f
@@ -139,29 +244,29 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
                 bbox.bottom = mTargetRect.bottom - padH
             }
 
-            // Draw bounding box + corner handles (kept as-is)
-            if (bbox.width() > 0f && bbox.height() > 0f) {
-                canvas.drawRect(bbox, boxPaint)
-                canvas.drawCircle(bbox.left, bbox.top, handleRadius, boxPaint)
-                canvas.drawCircle(bbox.right, bbox.bottom, handleRadius, boxPaint)
+            // Overlays only in normal mode
+            if (!fullMode) {
+                if (bbox.width() > 0f && bbox.height() > 0f) {
+                    canvas.drawRect(bbox, boxPaint)
+                    canvas.drawCircle(bbox.left, bbox.top, handleRadius, boxPaint)
+                    canvas.drawCircle(bbox.right, bbox.bottom, handleRadius, boxPaint)
+                }
+                // Keep timing/title as before
+                val lines = 2
+                val lineSpacing = 50f
+                val x = 10f
+                val topY = mTargetRect.bottom - 150f - (lines - 1) * lineSpacing
+                canvas.drawText("Producer: ${String.format("%.0f", producerTime / 1_000_000f)}ms", x, topY + lineSpacing * 0, mTextColor)
+                canvas.drawText("Consumer: ${String.format("%.0f", consumerTime / 1_000_000f)}ms", x, topY + lineSpacing * 1, mTextColor)
+                canvas.drawText("Brachial plexus segmentation", 10f, 50f, mTextColor)
+                canvas.drawText("by Donghyeon Baek", 10f, 100f, mTextColor)
             }
-            // Draw timing text block anchored to bottom-left of the rendered image
-            val lines = 4
-            val lineSpacing = 60f
-            val x = mTargetRect.left + 5f
-            val topY = mTargetRect.bottom - 15f - (lines - 1) * lineSpacing
-            canvas.drawText("FPS: ${String.format("%.0f", fps)}", x, topY + lineSpacing * 0, mTextColor)
-            canvas.drawText("Preprocess: ${String.format("%.0f", preprocessTime / 1_000_000f)}ms", x, topY + lineSpacing * 1, mTextColor)
-            canvas.drawText("Infer: ${String.format("%.0f", inferTime / 1_000_000f)}ms", x, topY + lineSpacing * 2, mTextColor)
-            canvas.drawText("Postprocess: ${String.format("%.0f", postprocessTime / 1_000_000f)}ms", x, topY + lineSpacing * 3, mTextColor)
-            // Overlay title and author (no title box)
-            canvas.drawText("Brachial plexus segmentation", 5f, 55f, mTextColor)
-            canvas.drawText("Author: Donghyeon Baek", 5f, 55f + 60f, mTextColor)
         }
         mLock.unlock()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (fullMode) return false // disable bbox interactions in full mode
         val x = event.x
         val y = event.y
         when (event.actionMasked) {
@@ -245,16 +350,13 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
     // desired height so that the bitmap fills the width and keeps ratio.
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = View.MeasureSpec.getSize(widthMeasureSpec)
-        if (width <= 0) {
-            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-            return
-        }
+        if (width <= 0) { super.onMeasure(widthMeasureSpec, heightMeasureSpec); return }
 
-        // Try to calculate desired height from current bitmap aspect ratio
         var desiredHeight: Int? = null
         mLock.lock()
         try {
-            val bmp = mBitmap
+            // In full mode, ignore Show/Hide and size by inference bitmap
+            val bmp = if (fullMode) mBitmap else if (showInference) mBitmap else (mOriginalBitmap ?: mBitmap)
             if (bmp != null && bmp.width > 0) {
                 val bitmapRatio = bmp.width.toFloat() / bmp.height.toFloat()
                 desiredHeight = (width / bitmapRatio).toInt()

@@ -40,9 +40,6 @@ class TfLiteSegmentor(
     private val hiddenInBuffers = ArrayList<ByteBuffer>()
     private var out0Buffer: ByteBuffer? = null
     private val hiddenOutBuffers = ArrayList<ByteBuffer>()
-    var lastPreTime: Long = 0; private set
-    var lastInferTime: Long = 0; private set
-    var lastPostTime: Long = 0; private set
 
     // Cached shapes/sizes
     private val inH: Int
@@ -137,7 +134,6 @@ class TfLiteSegmentor(
 
     // Build model input [1,T,C,H,W] float32 from a Bitmap. Thread-safe (no shared state).
     fun preprocess(input: Bitmap, sensorOrientation: Int, originalForDisplay: Bitmap? = null, cropRectInOriginal: Rect? = null): Preprocessed {
-        val t0 = System.nanoTime()
         // Convert to GRAY, resize to model input, rotate on small image, then convert to float
         val matAbgr = Mat()
         Utils.bitmapToMat(input, matAbgr)
@@ -168,7 +164,6 @@ class TfLiteSegmentor(
         repeat(frameRepeat) { fb.put(frameArr) }
         bbImg.rewind()
 
-        lastPreTime = System.nanoTime() - t0
         return Preprocessed(
             inputBuffer = bbImg,
             viewW = input.width,
@@ -181,8 +176,6 @@ class TfLiteSegmentor(
 
     // Run interpreter using a preprocessed input. Not thread-safe with other infer() calls.
     fun infer(pre: Preprocessed, hiddenState: Array<FloatArray>? = null): InferResult {
-        val t2 = System.nanoTime()
-
         val inputsArray = arrayOfNulls<Any>(inputCount)
         inputsArray[0] = pre.inputBuffer
 
@@ -239,7 +232,6 @@ class TfLiteSegmentor(
         } catch (e: Exception) {
             Log.e("TfLiteSegmentor", "Inference failed!", e); throw e
         }
-        lastInferTime = System.nanoTime() - t2
 
         val outFloats = FloatArray(out0Elems)
         val outBb = outputsMap[0] as ByteBuffer
@@ -263,7 +255,6 @@ class TfLiteSegmentor(
 
     // Convert float output to displayable RGBA Bitmap with desired view size and orientation. Thread-safe (local Mats).
     fun postprocessToBitmap(res: InferResult, viewW: Int, viewH: Int, sensorOrientation: Int): Bitmap {
-        val t3 = System.nanoTime()
         val outFloatMatLocal = Mat(res.outH, res.outW, CvType.CV_32FC3).apply { put(0, 0, res.outFloats) }
 
         val outRotFloatLocal = Mat()
@@ -286,7 +277,6 @@ class TfLiteSegmentor(
         val outBmp = Bitmap.createBitmap(viewW, viewH, Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(outRgbaLocal, outBmp)
 
-        lastPostTime = System.nanoTime() - t3
         return outBmp
     }
 }

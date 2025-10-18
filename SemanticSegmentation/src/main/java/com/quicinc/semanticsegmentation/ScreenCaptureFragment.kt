@@ -3,6 +3,8 @@ package com.quicinc.semanticsegmentation
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -96,7 +98,13 @@ class ScreenCaptureFragment : Fragment() {
             try {
                 if (latestPre.get() == null) { // drop if pending
                     val bmp = imageToBitmap(img)
-                    latestPre.set(seg.preprocess(bmp, 0))
+                    // Update reference size for mapping rect
+                    fragmentRender?.updateReferenceSize(bmp.width, bmp.height)
+                    // Try to crop via FragmentRender
+                    val pre = fragmentRender?.getCroppedBitmapWithRect(bmp)?.let { (cropped, rect) ->
+                        seg.preprocess(cropped, 0, originalForDisplay = bmp, cropRectInOriginal = rect)
+                    } ?: seg.preprocess(bmp, 0, originalForDisplay = bmp, cropRectInOriginal = null)
+                    latestPre.set(pre)
                 }
             } finally { img.close() }
         }, bgHandler)
@@ -139,8 +147,29 @@ class ScreenCaptureFragment : Fragment() {
                     try {
                         val inf = seg.infer(pre, hiddenState)
                         hiddenState = inf.newHidden
-                        val outBmp = seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
-                        fragmentRender?.post { fragmentRender?.render(outBmp, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime) }
+                        val fr = fragmentRender
+                        if (fr != null) {
+                            val full = fr.isFullMode()
+                            val outBmp: Bitmap =
+                                if (pre.cropRectInOriginal != null && pre.originalForDisplay != null) {
+                                    val rect: Rect = pre.cropRectInOriginal
+                                    val cropSeg = seg.postprocessToBitmap(inf, rect.width(), rect.height(), pre.sensorOrientation)
+                                    if (full) {
+                                        cropSeg
+                                    } else {
+                                        val composed = Bitmap.createBitmap(pre.originalForDisplay.width, pre.originalForDisplay.height, Bitmap.Config.ARGB_8888)
+                                        val canvas = Canvas(composed)
+                                        canvas.drawBitmap(pre.originalForDisplay, 0f, 0f, null)
+                                        canvas.drawBitmap(cropSeg, rect.left.toFloat(), rect.top.toFloat(), null)
+                                        composed
+                                    }
+                                } else {
+                                    seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
+                                }
+                            // Pass original frame as well
+                            val orig = pre.originalForDisplay
+                            fragmentRender?.post { fragmentRender?.render(outBmp, orig, 0f, 0L, 0L) }
+                        }
                     } catch (_: Exception) { }
                 }
                 inferHandler?.post(this)

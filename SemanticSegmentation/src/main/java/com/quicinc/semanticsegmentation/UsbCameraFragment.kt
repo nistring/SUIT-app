@@ -3,6 +3,9 @@ package com.quicinc.semanticsegmentation
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.os.Bundle
@@ -140,8 +143,28 @@ class UsbCameraFragment : Fragment() {
                         val inf = seg.infer(pre, hiddenState)
                         hiddenState = inf.newHidden
                         val fr = fragmentRender
-                        val outBmp = seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
-                        fr.post { fr.render(outBmp, 0f, seg.lastInferTime, seg.lastPreTime, seg.lastPostTime) }
+                        if (fr != null) {
+                            val full = fr.isFullMode()
+                            val outBmp: Bitmap =
+                                if (pre.cropRectInOriginal != null && pre.originalForDisplay != null) {
+                                    val rect: Rect = pre.cropRectInOriginal
+                                    val cropSeg = seg.postprocessToBitmap(inf, rect.width(), rect.height(), pre.sensorOrientation)
+                                    if (full) {
+                                        cropSeg
+                                    } else {
+                                        val composed = Bitmap.createBitmap(pre.originalForDisplay.width, pre.originalForDisplay.height, Bitmap.Config.ARGB_8888)
+                                        val canvas = Canvas(composed)
+                                        canvas.drawBitmap(pre.originalForDisplay, 0f, 0f, null)
+                                        canvas.drawBitmap(cropSeg, rect.left.toFloat(), rect.top.toFloat(), null)
+                                        composed
+                                    }
+                                } else {
+                                    seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
+                                }
+                            // Pass original frame as well
+                            val orig = pre.originalForDisplay
+                            fr.post { fr.render(outBmp, orig, 0f, 0L, 0L) }
+                        }
                     } catch (_: Exception) { }
                 }
                 inferHandler?.post(this)
@@ -184,7 +207,15 @@ class UsbCameraFragment : Fragment() {
             val seg = segmentor ?: return
             if (latestPre.get() != null) return // drop if pending
             textureView.bitmap?.let { bmp ->
-                try { latestPre.set(seg.preprocess(bmp, sensorOrientation)) } catch (_: Exception) { }
+                try {
+                    // Update reference size for mapping rect
+                    fragmentRender.updateReferenceSize(bmp.width, bmp.height)
+                    // Try to crop via FragmentRender
+                    val pre = fragmentRender.getCroppedBitmapWithRect(bmp)?.let { (cropped, rect) ->
+                        seg.preprocess(cropped, sensorOrientation, originalForDisplay = bmp, cropRectInOriginal = rect)
+                    } ?: seg.preprocess(bmp, sensorOrientation, originalForDisplay = bmp, cropRectInOriginal = null)
+                    latestPre.set(pre)
+                } catch (_: Exception) { }
             }
         }
     }
