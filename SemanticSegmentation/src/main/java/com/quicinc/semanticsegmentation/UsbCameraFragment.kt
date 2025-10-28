@@ -60,7 +60,6 @@ class UsbCameraFragment : Fragment() {
     }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
-        OpenCVLoader.initDebug()
         return inflater.inflate(R.layout.fragment_camera, container, false)
     }
 

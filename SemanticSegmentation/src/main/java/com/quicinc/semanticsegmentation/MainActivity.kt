@@ -521,26 +521,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showModelPicker() {
-        // List .tflite files from assets
-        val models = try {
-            assets.list("")?.filter { it.endsWith(".tflite") }?.sorted()?.toTypedArray() ?: emptyArray()
-        } catch (_: Exception) { emptyArray() }
+        val allFiles: Array<String> = try {
+            assets.list("") ?: emptyArray<String>()
+        } catch (_: Exception) { 
+            emptyArray<String>()
+        }
+        
+        val models = allFiles.filter { it.endsWith(".tflite") || it.endsWith(".bin") }.sorted().toTypedArray()
 
         if (models.isEmpty()) {
-            Toast.makeText(this, "No .tflite models found in assets.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No models found in assets.", Toast.LENGTH_SHORT).show()
             return
         }
 
         val current = selectedModelAsset ?: runCatching { resources.getString(R.string.tfLiteModelAsset) }.getOrNull()
         val preselect = models.indexOfFirst { it == current }.coerceAtLeast(0)
 
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Select model")
-            .setSingleChoiceItems(models, preselect) { dialog, which ->
+            .setSingleChoiceItems(models, preselect) { dialogInterface, which ->
                 selectedModelAsset = models[which]
-                dialog.dismiss()
+                Toast.makeText(this, "Loading: ${models[which]}", Toast.LENGTH_SHORT).show()
+                dialogInterface.dismiss()
                 createTFLiteClassifiersAsync()
-                Toast.makeText(this, "Loading model: ${models[which]}", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Cancel", null)
             .show()

@@ -12,7 +12,6 @@ public class AIHubDefaults {
     // Delegates enabled to replicate AI Hub's defaults on Qualcomm devices.
     public static final Set<TFLiteHelpers.DelegateType> enabledDelegates = new HashSet<>(Arrays.asList(
         TFLiteHelpers.DelegateType.QNN_NPU,
-        TFLiteHelpers.DelegateType.NNAPI,
         TFLiteHelpers.DelegateType.GPUv2
     ));
 

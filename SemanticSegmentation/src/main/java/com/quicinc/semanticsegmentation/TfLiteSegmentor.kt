@@ -60,9 +60,12 @@ class TfLiteSegmentor(
     init {
         // Ensure OpenCV native libs are loaded
         val cvReady = try { OpenCVLoader.initDebug() } catch (_: Throwable) { false }
-        if (!cvReady) { try { System.loadLibrary("opencv_java4") } catch (t: Throwable) { throw RuntimeException("Failed to load OpenCV native libraries.", t) } }
+        if (!cvReady) { 
+            System.loadLibrary("opencv_java4")
+        }
 
         val modelAndHash: Pair<MappedByteBuffer, String> = TFLiteHelpers.loadModelFile(context.assets, modelPath)
+        
         val iResult: Pair<Interpreter, Map<TFLiteHelpers.DelegateType, Delegate>> =
             TFLiteHelpers.CreateInterpreterAndDelegatesFromOptions(
                 modelAndHash.first,

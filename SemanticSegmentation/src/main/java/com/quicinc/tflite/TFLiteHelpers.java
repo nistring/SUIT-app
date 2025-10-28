@@ -38,38 +38,8 @@ public class TFLiteHelpers {
     private static final String TAG = "QualcommTFLiteHelpers";
 
     public enum DelegateType {
-        // GPUv2 Delegate: https://www.tensorflow.org/lite/performance/gpu
-        // https://app.aihub.qualcomm.com/docs/hub/api.html#profile-inference-options
-        // https://app.aihub.qualcomm.com/docs/hub/api.html#tflite-delegate-options-for-gpuv2
-        //
-        // Limitations:
-        //   * Some settings for GPUv2 that AI Hub sets are not used in this helper file because
-        //     they are not accessible via the TFLite Java API. Expect a slight difference
-        //     in on-device performance compared to what AI Hub reports for the same model.
-        //
         GPUv2,
-
-        // QNN Delegate (NPU): https://docs.Qualcomm.com/bundle/publicresource/topics/80-63442-50/introduction.html
-        // https://app.aihub.qualcomm.com/docs/hub/api.html#profile-inference-options
-        // https://app.aihub.qualcomm.com/docs/hub/api.html#tflite-delegate-options-for-qnn
-        //
-        // Limitations:
-        //   * Applicable only on Qualcomm chipsets that support the QNN SDK.
-        //
-        //   * Floating point compute is supported only on Snapdragon 8 Gen 1 and newer (with some exceptions).
-        //     CreateInterpreterAndDelegatesFromOptions will not apply this delegate for floating point models on hardware that does not support them.
-        //     See documentation for hardware support details https://docs.qualcomm.com/bundle/publicresource/topics/80-63442-50/overview.html
         QNN_NPU,
-
-    // NNAPI (Android Neural Networks API): lets the system route ops to device accelerators (e.g., NPU/DSP)
-    // Useful on non-Qualcomm or when QNN is unavailable; also acts as a cross-vendor path.
-    NNAPI,
-
-        // ------
-        //
-        // Additional delegates (eg. NNAPI, or something targeting non-Qualcomm hardware) could be added here.
-        //
-        // ------
     }
 
     /**
@@ -100,6 +70,7 @@ public class TFLiteHelpers {
      *         These delegates must be kept in memory until they are no longer needed. Before
      *         deleting, the client must call close() on the returned delegates and interpreter.
      */
+    @SuppressWarnings("unchecked")
     public static Pair<Interpreter, Map<DelegateType, Delegate>> CreateInterpreterAndDelegatesFromOptions(
             MappedByteBuffer tfLiteModel,
             DelegateType[][] delegatePriorityOrder,
@@ -162,6 +133,8 @@ public class TFLiteHelpers {
         throw new RuntimeException("Unable to create an interpreter of any kind for the provided model. See log for details.");
     }
 
+
+
     /**
      * Create an interpreter from the given delegates.
      *
@@ -171,6 +144,7 @@ public class TFLiteHelpers {
      * @param tfLiteModel   TFLiteModel to pass to the interpreter.
      * @return An Interpreter if creation is successful, and null otherwise.
      */
+    @SuppressWarnings("unchecked")
     public static Interpreter CreateInterpreterFromDelegates(
             final Pair<DelegateType, Delegate>[] delegates,
             int numCPUThreads,
@@ -206,12 +180,12 @@ public class TFLiteHelpers {
     }
 
     /**
-     * Load a TF Lite model from disk.
+     * Load a TFLite model file from assets.
      *
      * @param assets        Android app asset manager.
-     * @param modelFilename File name of the resource to load.
-     * @return The loaded model in MappedByteBuffer format, and a unique model identifier hash string.
-     * @throws IOException If the model file does not exist or cannot be read.
+     * @param filename      File name of the model to load (.tflite).
+     * @return The loaded file in MappedByteBuffer format, and a unique file identifier hash string.
+     * @throws IOException If the file does not exist or cannot be read.
      */
     public static Pair<MappedByteBuffer, String> loadModelFile(AssetManager assets, String modelFilename)
             throws IOException, NoSuchAlgorithmException {
@@ -263,15 +237,6 @@ public class TFLiteHelpers {
         if (delegateType == DelegateType.QNN_NPU) {
             return CreateQNN_NPUDelegate(nativeLibraryDir, cacheDir, modelIdentifier);
         }
-        if (delegateType == DelegateType.NNAPI) {
-            return CreateNNAPIDelegate(cacheDir, modelIdentifier);
-        }
-
-        // ------
-        //
-        // Additional delegates (eg. NNAPI, or something targeting non-Qualcomm hardware) could be created here.
-        //
-        // ------
 
         throw new RuntimeException("Delegate creation not implemented for type: " + delegateType.name());
     }
@@ -286,50 +251,36 @@ public class TFLiteHelpers {
      * @return The created delegate if successful, and null otherwise.
      */
     static Delegate CreateQNN_NPUDelegate(String nativeLibraryDir, String cacheDir, String modelIdentifier) {
-        try {
-            QnnDelegate.Options qnnOptions = new QnnDelegate.Options();
-            // Point the QNN Delegate to the QNN libraries to use.
-            qnnOptions.setSkelLibraryDir(nativeLibraryDir);
-            qnnOptions.setLogLevel(QnnDelegate.Options.LogLevel.LOG_LEVEL_WARN);
+        QnnDelegate.Options qnnOptions = new QnnDelegate.Options();
+        qnnOptions.setSkelLibraryDir(nativeLibraryDir);
+        qnnOptions.setLogLevel(QnnDelegate.Options.LogLevel.LOG_LEVEL_WARN);
+        qnnOptions.setCacheDir(cacheDir);
+        qnnOptions.setModelToken(modelIdentifier);
 
-            // The QNN delegate will compile this model for use with the NPU.
-            // If the cache dir and model token are set, the compiled asset will be stored on disk
-            qnnOptions.setCacheDir(cacheDir);
-            qnnOptions.setModelToken(modelIdentifier);
+        // Check capabilities and configure backend
+        if (QnnDelegate.checkCapability(QnnDelegate.Capability.DSP_RUNTIME)) {
+            qnnOptions.setBackendType(QnnDelegate.Options.BackendType.DSP_BACKEND);
+            qnnOptions.setDspOptions(QnnDelegate.Options.DspPerformanceMode.DSP_PERFORMANCE_BURST, QnnDelegate.Options.DspPdSession.DSP_PD_SESSION_ADAPTIVE);
+        } else {
+            boolean hasHTP_FP16 = QnnDelegate.checkCapability(QnnDelegate.Capability.HTP_RUNTIME_FP16);
+            boolean hasHTP_QUANT = QnnDelegate.checkCapability(QnnDelegate.Capability.HTP_RUNTIME_QUANTIZED);
 
-            // Check capabilities (may trigger native lib load); wrap to avoid app crash on missing libs
-            if (QnnDelegate.checkCapability(QnnDelegate.Capability.DSP_RUNTIME)) {
-                qnnOptions.setBackendType(QnnDelegate.Options.BackendType.DSP_BACKEND);
-                qnnOptions.setDspOptions(QnnDelegate.Options.DspPerformanceMode.DSP_PERFORMANCE_BURST, QnnDelegate.Options.DspPdSession.DSP_PD_SESSION_ADAPTIVE);
-            } else {
-                boolean hasHTP_FP16 = QnnDelegate.checkCapability(QnnDelegate.Capability.HTP_RUNTIME_FP16);
-                boolean hasHTP_QUANT = QnnDelegate.checkCapability(QnnDelegate.Capability.HTP_RUNTIME_QUANTIZED);
-
-                if (!hasHTP_FP16 && !hasHTP_QUANT) {
-                    Log.e(TAG, "QNN with NPU backend is not supported on this device.");
-                    return null;
-                }
-
-                qnnOptions.setBackendType(QnnDelegate.Options.BackendType.HTP_BACKEND);
-                qnnOptions.setHtpUseConvHmx(QnnDelegate.Options.HtpUseConvHmx.HTP_CONV_HMX_ON);
-                qnnOptions.setHtpPerformanceMode(QnnDelegate.Options.HtpPerformanceMode.HTP_PERFORMANCE_BURST);
-
-                if (hasHTP_FP16) {
-                    qnnOptions.setHtpPrecision(QnnDelegate.Options.HtpPrecision.HTP_PRECISION_FP16);
-                }
-            }
-
-            try {
-                Log.i(TAG, "Creating QNN delegate (backend=" + qnnOptions.getBackendType() + ")");
-                return new QnnDelegate(qnnOptions);
-            } catch (Throwable e) {
-                Log.e(TAG, "QNN with NPU backend failed to initialize: " + e.getMessage());
+            if (!hasHTP_FP16 && !hasHTP_QUANT) {
+                Log.e(TAG, "QNN with NPU backend is not supported on this device.");
                 return null;
             }
-        } catch (Throwable t) {
-            Log.e(TAG, "QNN native libraries unavailable: " + t.getMessage());
-            return null;
+
+            qnnOptions.setBackendType(QnnDelegate.Options.BackendType.HTP_BACKEND);
+            qnnOptions.setHtpUseConvHmx(QnnDelegate.Options.HtpUseConvHmx.HTP_CONV_HMX_ON);
+            qnnOptions.setHtpPerformanceMode(QnnDelegate.Options.HtpPerformanceMode.HTP_PERFORMANCE_BURST);
+
+            if (hasHTP_FP16) {
+                qnnOptions.setHtpPrecision(QnnDelegate.Options.HtpPrecision.HTP_PRECISION_FP16);
+            }
         }
+
+        Log.i(TAG, "Creating QNN delegate (backend=" + qnnOptions.getBackendType() + ")");
+        return new QnnDelegate(qnnOptions);
     }
 
     /**
@@ -339,82 +290,15 @@ public class TFLiteHelpers {
      *
      * @param cacheDir         Android app cache directory.
      * @param modelIdentifier  Unique identifier string for the model being loaded.
-     * @return A The created delegate if successful, and null otherwise.
+     * @return The created delegate if successful, and null otherwise.
      */
     static Delegate CreateGPUv2Delegate(String cacheDir, String modelIdentifier) {
         GpuDelegateFactory.Options gpuOptions = new GpuDelegateFactory.Options();
-
-        // -------------------------------
-        // TO REPLICATE AN AI HUB JOB...
-        //
-        // Replace the gpuOptions settings with the "Runtime Configuration" shown
-        // in the profile job page.
-        //
-        // The "GPUv2 Delegate Option" section applies here.
-        //
-        // inference_preference -->  gpuOptions.setInferencePreference(GpuDelegateFactory.Options.<PREFERENCE>)
-        //
-        // inference_priority1,2,3 --> The Java API for TFLite cannot access this setting directly.
-        //                             A related setting exists that can act as an approximation:
-        //
-        //                             If TFLITE_GPU_INFERENCE_PRIORITY_MAX_PRECISION is priority 2 or 3, set
-        //                                  gpuOptions.setPrecisionLossAllowed(true);
-        //                             Otherwise, set
-        //                                  gpuOptions.setPrecisionLossAllowed(false);
-        //
-        //
-        // -------------------------------
         gpuOptions.setInferencePreference(GpuDelegateFactory.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED);
         gpuOptions.setPrecisionLossAllowed(false);
         gpuOptions.setSerializationParams(cacheDir, modelIdentifier);
 
-        try {
-            Log.i(TAG, "Creating GPUv2 delegate (sustained speed, fp16 allowed)");
-            return new GpuDelegate(gpuOptions);
-        } catch (Exception e) {
-            Log.e(TAG, "GPUv2 delegate failed to initialize: " + e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Create and configure the NNAPI delegate. If NNAPI is unavailable, returns null and logs a warning.
-     */
-    static Delegate CreateNNAPIDelegate(String cacheDir, String modelIdentifier) {
-        // Helper: try to set optional methods via reflection for broad TFLite version support
-        class OptsHelper {
-            void tryInvoke(Object target, String method, Class<?>[] types, Object... args) {
-                try {
-                    java.lang.reflect.Method m = target.getClass().getMethod(method, types);
-                    m.invoke(target, args);
-                } catch (Throwable ignored) {
-                    // Swallow – option not available on this TFLite version or invalid on device.
-                }
-            }
-        }
-
-        try {
-            NnApiDelegate.Options opts = new NnApiDelegate.Options();
-            // Prefer sustained performance for longer-running sessions
-            opts.setExecutionPreference(NnApiDelegate.Options.EXECUTION_PREFERENCE_SUSTAINED_SPEED);
-            // Allow FP16 precision where supported by drivers
-            opts.setAllowFp16(true);
-
-            // Best effort: enable NNAPI compilation caching to reduce warm-up time
-            OptsHelper helper = new OptsHelper();
-            if (cacheDir != null && modelIdentifier != null) {
-                helper.tryInvoke(opts, "setCacheDir", new Class<?>[]{String.class}, cacheDir);
-                helper.tryInvoke(opts, "setModelToken", new Class<?>[]{String.class}, modelIdentifier);
-            }
-
-            // Avoid forcing a specific accelerator name; let the system choose the best available driver.
-            // Also hint not to use CPU-only NNAPI path when a vendor driver exists (method availability varies).
-            helper.tryInvoke(opts, "setUseNnapiCpuOnly", new Class<?>[]{boolean.class}, false);
-            Log.i(TAG, "Creating NNAPI delegate (sustained speed, fp16, default accelerator)");
-            return new NnApiDelegate(opts);
-        } catch (Throwable t) {
-            Log.w(TAG, "NNAPI delegate unavailable: " + t.getMessage());
-            return null;
-        }
+        Log.i(TAG, "Creating GPUv2 delegate (sustained speed, fp16 allowed)");
+        return new GpuDelegate(gpuOptions);
     }
 }

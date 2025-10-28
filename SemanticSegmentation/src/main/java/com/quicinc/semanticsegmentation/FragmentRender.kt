@@ -174,12 +174,10 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
                 val canvasRatio = width.toFloat() / height.toFloat()
                 val bmpRatio = bmp.width.toFloat() / bmp.height.toFloat()
                 if (canvasRatio > bmpRatio) {
-                    val insetHeight = height
                     val insetWidth = (height.toFloat() * bmpRatio).toInt()
                     val offsetWidth = (width - insetWidth) / 2
                     mDisplayRect.set(offsetWidth, 0, offsetWidth + insetWidth, height)
                 } else {
-                    val insetWidth = width
                     val insetHeight = (width.toFloat() / bmpRatio).toInt()
                     val offsetHeight = (height - insetHeight) / 2
                     mDisplayRect.set(0, offsetHeight, width, offsetHeight + insetHeight)
@@ -187,12 +185,10 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
                 if (refW > 0 && refH > 0) {
                     val refRatio = refW.toFloat() / refH.toFloat()
                     if (canvasRatio > refRatio) {
-                        val insetHeight = height
                         val insetWidth = (height.toFloat() * refRatio).toInt()
                         val offsetWidth = (width - insetWidth) / 2
                         mTargetRect.set(offsetWidth, 0, offsetWidth + insetWidth, height)
                     } else {
-                        val insetWidth = width
                         val insetHeight = (width.toFloat() / refRatio).toInt()
                         val offsetHeight = (height - insetHeight) / 2
                         mTargetRect.set(0, offsetHeight, width, offsetHeight + insetHeight)
