@@ -161,7 +161,16 @@ class TfLiteSegmentor(
         val bbImg = ByteBuffer.allocateDirect(inTensor0Bytes).order(ByteOrder.nativeOrder())
         val tmpBbImg = bbImg as ByteBuffer
         val fb = tmpBbImg.asFloatBuffer()
-        repeat(frameRepeat) { fb.put(frameArr) }
+        // Fill the entire buffer with frame data repeated as needed
+        // Ensure buffer capacity is fully utilized
+        val bufferFloats = inTensor0Bytes / 4
+        var filledFloats = 0
+        while (filledFloats < bufferFloats) {
+            val remaining = bufferFloats - filledFloats
+            val toWrite = minOf(frameArr.size, remaining)
+            fb.put(frameArr, 0, toWrite)
+            filledFloats += toWrite
+        }
         bbImg.rewind()
 
         return Preprocessed(
