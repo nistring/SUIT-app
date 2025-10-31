@@ -2,61 +2,74 @@ package com.quicinc.semanticsegmentation
 
 import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
-import android.hardware.camera2.*
+import android.hardware.usb.UsbDevice
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
-import android.util.Size
+import android.util.Log
 import android.view.*
 import android.view.TextureView
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import org.opencv.android.OpenCVLoader
-import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
+import com.serenegiant.usb.IFrameCallback
+import com.serenegiant.usb.USBMonitor
+import com.serenegiant.usb.UVCCamera
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 
 class UsbCameraFragment : Fragment() {
     private lateinit var textureView: TextureView
     private lateinit var fragmentRender: FragmentRender
     private var segmentor: TfLiteSegmentor? = null
-    private var cameraId: String? = null
-    private var captureSession: CameraCaptureSession? = null
-    private var cameraDevice: CameraDevice? = null
-    private var previewSize: Size? = null
-    private var sensorOrientation: Int = 0
+    private var usbMonitor: USBMonitor? = null
+    private var uvcCamera: UVCCamera? = null
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
-    private val cameraLock = Semaphore(1)
-
-    // array of hidden states (one per RNN output)
     private var hiddenState: Array<FloatArray>? = null
-
-    // --- Added: three-stage pipeline state ---
     private val latestPre = AtomicReference<TfLiteSegmentor.Preprocessed?>()
     private var inferThread: HandlerThread? = null
     private var inferHandler: Handler? = null
-    private var displayThread: HandlerThread? = null
-    private var displayHandler: Handler? = null
     @Volatile private var pipelineRunning = false
-    // -----------------------------------------
 
-    companion object { fun create(seg: TfLiteSegmentor) = UsbCameraFragment().apply { segmentor = seg } }
+    companion object { 
+        private const val TAG = "UsbCameraFragment"
+        fun create(seg: TfLiteSegmentor) = UsbCameraFragment().apply { segmentor = seg } 
+    }
 
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
-            // Open camera only when we are in running state (manual start)
             if (pipelineRunning) openCamera()
         }
         override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {}
         override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean = true
         override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
+    }
+
+    private val frameCallback = IFrameCallback { frame ->
+        val seg = segmentor ?: return@IFrameCallback
+        if (latestPre.get() != null) return@IFrameCallback
+        try {
+            val bmp = convertFrameToBitmap(frame)
+            if (bmp != null) {
+                fragmentRender.updateReferenceSize(bmp.width, bmp.height)
+                val pre = fragmentRender.getCroppedBitmapWithRect(bmp)?.let { (cropped, rect) ->
+                    seg.preprocess(cropped, 0, originalForDisplay = bmp, cropRectInOriginal = rect)
+                } ?: seg.preprocess(bmp, 0, originalForDisplay = bmp, cropRectInOriginal = null)
+                latestPre.set(pre)
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun convertFrameToBitmap(frame: ByteBuffer): Bitmap? {
+        return try {
+            val size = frame.remaining()
+            val bytes = ByteArray(size)
+            frame.get(bytes)
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, size)
+        } catch (_: Exception) { null }
     }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
@@ -68,6 +81,14 @@ class UsbCameraFragment : Fragment() {
         textureView = view.findViewById(R.id.surface)
         textureView.surfaceTextureListener = surfaceListener
         fragmentRender = view.findViewById(R.id.fragmentRender)
+        initUsbMonitor()
+    }
+
+    private fun initUsbMonitor() {
+        if (usbMonitor == null) {
+            usbMonitor = USBMonitor(requireContext(), onDeviceConnectListener)
+            usbMonitor?.register()
+        }
     }
 
     override fun onResume() { 
@@ -75,63 +96,104 @@ class UsbCameraFragment : Fragment() {
         hiddenState = null
         textureView.surfaceTextureListener = surfaceListener
     }
-    override fun onPause() { closeCamera(); stopPipeline(); stopBackgroundThread(); super.onPause() }
+    
+    override fun onPause() { 
+        closeCamera()
+        stopPipeline()
+        stopBackgroundThread()
+        super.onPause()
+    }
+    
+    override fun onDestroy() {
+        usbMonitor?.unregister()
+        usbMonitor?.destroy()
+        usbMonitor = null
+        super.onDestroy()
+    }
 
-    private fun requestCameraPermission() { registerForActivityResult(ActivityResultContracts.RequestPermission()) { }.launch(Manifest.permission.CAMERA) }
+    private val onDeviceConnectListener = object : USBMonitor.OnDeviceConnectListener {
+        override fun onAttach(device: UsbDevice?) {
+            Log.d(TAG, "USB device attached: ${device?.deviceName}")
+            usbMonitor?.requestPermission(device)
+        }
+        override fun onConnect(device: UsbDevice?, ctrlBlock: USBMonitor.UsbControlBlock?, createNew: Boolean) {
+            Log.d(TAG, "USB device connected: ${device?.deviceName}")
+            openUvcCamera(ctrlBlock)
+        }
+        override fun onDisconnect(device: UsbDevice?, ctrlBlock: USBMonitor.UsbControlBlock?) {
+            Log.d(TAG, "USB device disconnected: ${device?.deviceName}")
+            closeCamera()
+        }
+        override fun onDettach(device: UsbDevice?) {
+            Log.d(TAG, "USB device detached: ${device?.deviceName}")
+            closeCamera()
+        }
+        override fun onCancel(device: UsbDevice?) {
+            Log.d(TAG, "USB permission cancelled: ${device?.deviceName}")
+        }
+    }
 
-    private fun setUpCameraOutputs() {
-        val activity = activity ?: return
-        val manager = activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        for (id in manager.cameraIdList) {
-            val chars = manager.getCameraCharacteristics(id)
-            val facing = chars.get(CameraCharacteristics.LENS_FACING)
-            if (facing != CameraCharacteristics.LENS_FACING_EXTERNAL) continue
-            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: continue
-            sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-            val sizes = map.getOutputSizes(SurfaceTexture::class.java)
-            val seg = segmentor ?: continue
-            val targetW: Int; val targetH: Int
-            if (sensorOrientation == 90 || sensorOrientation == 270) { targetW = seg.getInputHeight(); targetH = seg.getInputWidth() }
-            else { targetW = seg.getInputWidth(); targetH = seg.getInputHeight() }
-            previewSize = sizes.minByOrNull { (it.width - targetW).toLong() * (it.height - targetH) } ?: sizes.first()
-            cameraId = id
+    private fun openUvcCamera(ctrlBlock: USBMonitor.UsbControlBlock?) {
+        if (ctrlBlock == null) {
+            Log.e(TAG, "Control block is null")
             return
         }
-        // Fallback to back camera if no external found
-        for (id in manager.cameraIdList) {
-            val chars = manager.getCameraCharacteristics(id)
-            if (chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) {
-                val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: continue
-                sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-                val sizes = map.getOutputSizes(SurfaceTexture::class.java)
-                previewSize = sizes.first()
-                cameraId = id
-                return
-            }
+        try {
+            Log.d(TAG, "Opening UVC camera")
+            uvcCamera = UVCCamera()
+            uvcCamera?.open(ctrlBlock)
+            uvcCamera?.setPreviewSize(640, 480, UVCCamera.FRAME_FORMAT_MJPEG)
+            val surface = Surface(textureView.surfaceTexture)
+            uvcCamera?.setPreviewDisplay(surface)
+            uvcCamera?.setFrameCallback(frameCallback, UVCCamera.PIXEL_FORMAT_YUV420SP)
+            uvcCamera?.startPreview()
+            Log.d(TAG, "UVC camera preview started")
+            android.widget.Toast.makeText(requireContext(), "USB camera connected", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open UVC camera", e)
+            e.printStackTrace()
+            android.widget.Toast.makeText(requireContext(), "Failed to open USB camera: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
     private fun openCamera() {
-        val act = activity ?: return
-        if (ContextCompat.checkSelfPermission(act, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) { requestCameraPermission(); return }
-        setUpCameraOutputs()
-        val manager = act.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        try {
-            if (!cameraLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) throw RuntimeException("Timeout acquiring camera lock")
-            manager.openCamera(cameraId!!, stateCallback, backgroundHandler)
-        } catch (e: Exception) { e.printStackTrace() }
+        val devices = usbMonitor?.deviceList
+        Log.d(TAG, "openCamera called, devices: ${devices?.size ?: 0}")
+        if (devices.isNullOrEmpty()) {
+            android.widget.Toast.makeText(requireContext(), "No USB devices found", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        devices.forEach { device ->
+            Log.d(TAG, "Found device: ${device.deviceName}, VID: ${device.vendorId}, PID: ${device.productId}")
+        }
+        devices.firstOrNull()?.let { device ->
+            Log.d(TAG, "Requesting permission for: ${device.deviceName}")
+            usbMonitor?.requestPermission(device)
+        }
     }
 
-    private fun closeCamera() { try { cameraLock.acquire(); captureSession?.close(); captureSession=null; cameraDevice?.close(); cameraDevice=null } finally { cameraLock.release() } }
-    private fun startBackgroundThread() { backgroundThread = HandlerThread("UsbCameraBackground").also { it.start() }; backgroundHandler = Handler(backgroundThread!!.looper) }
-    private fun stopBackgroundThread() { backgroundThread?.quitSafely(); backgroundThread=null; backgroundHandler=null }
+    private fun closeCamera() {
+        uvcCamera?.stopPreview()
+        uvcCamera?.destroy()
+        uvcCamera = null
+    }
+    
+    private fun startBackgroundThread() {
+        backgroundThread = HandlerThread("UsbCameraBackground").also { it.start() }
+        backgroundHandler = Handler(backgroundThread!!.looper)
+    }
+    
+    private fun stopBackgroundThread() {
+        backgroundThread?.quitSafely()
+        backgroundThread = null
+        backgroundHandler = null
+    }
 
     private fun startPipeline() {
         if (pipelineRunning) return
         pipelineRunning = true
         inferThread = HandlerThread("UsbCamInfer").also { it.start() }
         inferHandler = Handler(inferThread!!.looper)
-        // removed display thread
         inferHandler?.post(object : Runnable {
             override fun run() {
                 if (!pipelineRunning) return
@@ -160,7 +222,6 @@ class UsbCameraFragment : Fragment() {
                                 } else {
                                     seg.postprocessToBitmap(inf, pre.viewW, pre.viewH, pre.sensorOrientation)
                                 }
-                            // Pass original frame as well
                             val orig = pre.originalForDisplay
                             fr.post { fr.render(outBmp, orig, 0f, 0L, 0L) }
                         }
@@ -173,66 +234,27 @@ class UsbCameraFragment : Fragment() {
 
     private fun stopPipeline() {
         pipelineRunning = false
-        // Drain queued tasks to prevent duplicate processing after model swap
         inferHandler?.removeCallbacksAndMessages(null)
-        inferThread?.quitSafely(); inferThread = null; inferHandler = null
-        // removed display thread stop
+        inferThread?.quitSafely()
+        inferThread = null
+        inferHandler = null
         latestPre.set(null)
         hiddenState = null
     }
 
-    private val stateCallback = object : CameraDevice.StateCallback() {
-        override fun onOpened(camera: CameraDevice) { cameraLock.release(); cameraDevice = camera; createPreviewSession() }
-        override fun onDisconnected(camera: CameraDevice) { cameraLock.release(); camera.close(); cameraDevice=null }
-        override fun onError(camera: CameraDevice, error: Int) { cameraLock.release(); camera.close(); cameraDevice=null; activity?.finish() }
-    }
-
-    private fun createPreviewSession() {
-        try {
-            val texture = textureView.surfaceTexture ?: return
-            val size = previewSize ?: return
-            texture.setDefaultBufferSize(size.width, size.height)
-            val surface = Surface(texture)
-            val builder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(surface) }
-            cameraDevice!!.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) { captureSession = session; builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE); session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler) }
-                override fun onConfigureFailed(session: CameraCaptureSession) {}
-            }, backgroundHandler)
-        } catch (e: Exception) { e.printStackTrace() }
-    }
-
-    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
-        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
-            val seg = segmentor ?: return
-            if (latestPre.get() != null) return // drop if pending
-            textureView.bitmap?.let { bmp ->
-                try {
-                    // Update reference size for mapping rect
-                    fragmentRender.updateReferenceSize(bmp.width, bmp.height)
-                    // Try to crop via FragmentRender
-                    val pre = fragmentRender.getCroppedBitmapWithRect(bmp)?.let { (cropped, rect) ->
-                        seg.preprocess(cropped, sensorOrientation, originalForDisplay = bmp, cropRectInOriginal = rect)
-                    } ?: seg.preprocess(bmp, sensorOrientation, originalForDisplay = bmp, cropRectInOriginal = null)
-                    latestPre.set(pre)
-                } catch (_: Exception) { }
-            }
-        }
-    }
-
-    // Public API: start manually from Activity button
     fun startManually() {
-        val act = activity ?: return
-        if (pipelineRunning && cameraDevice != null && captureSession != null) return
-        if (ContextCompat.checkSelfPermission(act, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestCameraPermission(); return
-        }
+        if (pipelineRunning && uvcCamera != null) return
         hiddenState = null
         if (backgroundThread == null) startBackgroundThread()
         startPipeline()
-        if (textureView.isAvailable) openCamera() else textureView.surfaceTextureListener = surfaceListener
+        initUsbMonitor()
+        mainHandler.postDelayed({
+            if (textureView.isAvailable) openCamera() else textureView.surfaceTextureListener = surfaceListener
+        }, 300)
     }
 
-    // Public API: stop and release resources
+    private val mainHandler = Handler(android.os.Looper.getMainLooper())
+
     fun stopManually() {
         closeCamera()
         stopPipeline()
@@ -240,16 +262,13 @@ class UsbCameraFragment : Fragment() {
         hiddenState = null
     }
 
-    // Allow swapping the segmentor at runtime
     fun setSegmentor(seg: TfLiteSegmentor) {
         val wasRunning = pipelineRunning
-        // Swap model without restarting input stream (camera stays open)
         segmentor = seg
-        // Reset state and restart only inferencer
         inferHandler?.removeCallbacksAndMessages(null)
         latestPre.set(null)
         hiddenState = null
-        stopPipeline() // stops only infer thread per implementation
+        stopPipeline()
         if (wasRunning) startPipeline()
     }
 }

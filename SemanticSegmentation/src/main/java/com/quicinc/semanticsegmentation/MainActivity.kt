@@ -354,24 +354,15 @@ class MainActivity : AppCompatActivity() {
 
                 if (supportFragmentManager.findFragmentById(R.id.main_content) == null) {
                     if (isProbablyEmulator()) {
-                        // In emulator: open file picker for MP4 and analyze frames
                         pickVideo.launch("video/*")
-                    } else if (hasExtCam) {
-                        // Do NOT auto-attach USB fragment; wait for manual Start
+                    } else if (hasExtCam || detectUvcVideoDevices().isNotEmpty()) {
                         configureMainButton()
                         Toast.makeText(this, "Press Start to begin USB capture.", Toast.LENGTH_SHORT).show()
                     } else {
-                        val uvc = detectUvcVideoDevices()
-                        if (uvc.isNotEmpty()) {
-                            Log.i("SemanticSeg", "UVC video devices detected: ${uvc.map { it.deviceName }}")
-                            Toast.makeText(this, "UVC device detected but not available via Camera2. A UVC library is required for live capture.", Toast.LENGTH_LONG).show()
-                        }
-                        // Show Pick Video
                         configureMainButton()
                         Toast.makeText(this, "Pick a video to run segmentation.", Toast.LENGTH_LONG).show()
                     }
                 } else {
-                    // If a fragment exists, still configure the button for toggling
                     configureMainButton()
                 }
             }
