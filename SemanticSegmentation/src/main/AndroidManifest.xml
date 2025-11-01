@@ -2,11 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.quicinc.semanticsegmentation">
 
+    <uses-permission android:name="android.permission.USB" />
+    <uses-permission android:name="android.permission.USB_PERMISSION" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="true" />
     <uses-feature android:name="android.hardware.camera.any" />
     <uses-feature android:name="android.hardware.camera.external" android:required="false" />
-    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
     <application
         android:configChanges="orientation|screenSize"
         android:extractNativeLibs="true"
@@ -38,8 +41,6 @@
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
-            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
-                android:resource="@xml/device_filter" />
         </activity>
     </application>
 

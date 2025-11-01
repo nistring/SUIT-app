@@ -5,3 +5,11 @@ plugins {
     // Kotlin 1.9.24 is compatible with AGP 8.7.x
     id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
 }
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral() // Keep this for other dependencies
+        maven { url = 'https://raw.github.com/saki4510t/libcommon/master/repository/' }
+    }
+}

@@ -53,6 +53,8 @@ class MainActivity : AppCompatActivity() {
     // Track USB inference state and availability
     private var isUsbRunning: Boolean = false
     private var hasExtCam: Boolean = false
+    // New: Track if USB camera successfully connected
+    private var isUsbCameraConnected: Boolean = false
 
     // Floating overlay buttons
     private var btnStartStop: Button? = null
@@ -349,7 +351,7 @@ class MainActivity : AppCompatActivity() {
                 applyFullModeToRender()
                 applyShowModeToRender()
 
-                // Cache camera availability for UI logic
+                // Cache camera availability for UI logic (deferred check)
                 hasExtCam = hasExternalCamera()
 
                 if (supportFragmentManager.findFragmentById(R.id.main_content) == null) {
@@ -357,7 +359,7 @@ class MainActivity : AppCompatActivity() {
                         pickVideo.launch("video/*")
                     } else if (hasExtCam || detectUvcVideoDevices().isNotEmpty()) {
                         configureMainButton()
-                        Toast.makeText(this, "Press Start to begin USB capture.", Toast.LENGTH_SHORT).show()
+                        // Don't show toast here; wait until user actually presses Start
                     } else {
                         configureMainButton()
                         Toast.makeText(this, "Pick a video to run segmentation.", Toast.LENGTH_LONG).show()
@@ -475,6 +477,7 @@ class MainActivity : AppCompatActivity() {
     private fun startUsb() {
         val seg = segmentor ?: return
         isUsbRunning = true
+        isUsbCameraConnected = false
         supportFragmentManager.commit { replace(R.id.main_content, UsbCameraFragment.create(seg)) }
         mainHandler.post {
             (supportFragmentManager.findFragmentById(R.id.main_content) as? UsbCameraFragment)?.startManually()
@@ -482,9 +485,18 @@ class MainActivity : AppCompatActivity() {
         }
         // Ensure renderer picks up current full mode
         mainHandler.post { applyFullModeToRender() }
-        // If device lacks external camera, still show a toast so user understands
-        if (!hasExtCam && !isProbablyEmulator()) {
-            Toast.makeText(this, "No external camera detected. Start may not capture video.", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Searching for USB camera...", Toast.LENGTH_SHORT).show()
+    }
+
+    // Public method called by UsbCameraFragment when camera successfully connects
+    fun onUsbCameraConnected() {
+        isUsbCameraConnected = true
+    }
+
+    // Public method called by UsbCameraFragment when camera fails to connect
+    fun onUsbCameraFailed(errorMsg: String) {
+        if (isUsbRunning && !isUsbCameraConnected) {
+            Toast.makeText(this, "Failed to connect USB camera: $errorMsg", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -554,7 +566,18 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Nothing to do here; live capture fragment will handle resume
+        enterImmersiveMode()
+        // Ensure renderer and fragment are properly restored
+        val frag = supportFragmentManager.findFragmentById(R.id.main_content)
+        if (frag is UsbCameraFragment && isUsbRunning) {
+            // Fragment handles its own resume and reconnection
+            Log.d("MainActivity", "Resumed with active USB fragment")
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Don't stop USB here; let fragment handle it in its onPause
     }
 
 

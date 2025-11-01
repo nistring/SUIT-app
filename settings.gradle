@@ -8,10 +8,10 @@ pluginManagement {
 
 dependencyResolutionManagement {
     repositories {
+        maven { url = 'https://jitpack.io' }
         google()
         mavenCentral()
-        maven { url 'https://jitpack.io' }
-        maven { url 'https://raw.github.com/saki4510t/libcommon/master/repository/' }
+        maven { url = 'https://raw.github.com/saki4510t/libcommon/master/repository/' }
     }
 }
 
@@ -21,3 +21,5 @@ rootProject.name = "SUIT-app"
 /** Applications **/
 // Keep only the SemanticSegmentation module
 include ':SemanticSegmentation'
+include ':libuvccamera'
+project(':libuvccamera').projectDir = file('UVCCamera/libuvccamera')
