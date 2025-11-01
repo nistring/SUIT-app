@@ -26,8 +26,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.commit
 import com.quicinc.tflite.AIHubDefaults
 import com.quicinc.tflite.TFLiteHelpers
-import java.io.IOException
-import java.security.NoSuchAlgorithmException
 import java.util.concurrent.Executors
 import org.opencv.android.OpenCVLoader
 import androidx.appcompat.app.AlertDialog
@@ -49,64 +47,54 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "No video selected.", Toast.LENGTH_SHORT).show()
         }
     }
+    
     private var selectedModelAsset: String? = null
-    // Track USB inference state and availability
     private var isUsbRunning: Boolean = false
     private var hasExtCam: Boolean = false
-    // New: Track if USB camera successfully connected
-    private var isUsbCameraConnected: Boolean = false
-
-    // Floating overlay buttons
-    private var btnStartStop: Button? = null
-    private var btnModel: Button? = null
-    // New: Full mode toggle button + state
-    private var btnFull: Button? = null
     private var isFullMode: Boolean = false
-    // New: Show/Hide inference toggle
-    private var btnShow: Button? = null
     private var isShowInference: Boolean = true
 
-    companion object {
-        private const val MENU_PICK_MODEL = 1
-        private const val MENU_START_USB = 2
-        private const val MENU_EXIT = 3
-    }
+    private var btnStartStop: Button? = null
+    private var btnModel: Button? = null
+    private var btnFull: Button? = null
+    private var btnShow: Button? = null
+    private var btnInit: Button? = null
+    private var btnLicense: Button? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.main_activity)
 
-        // Load OpenCV native libs early to prevent UnsatisfiedLinkError from background threads
         try {
-            if (!OpenCVLoader.initDebug()) {
-                System.loadLibrary("opencv_java4")
-            }
-        } catch (_: Throwable) { /* let TfLiteSegmentor fallback handle hard failure */ }
+            if (!OpenCVLoader.initDebug()) System.loadLibrary("opencv_java4")
+        } catch (_: Throwable) {}
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterImmersiveMode()
         progressBar = findViewById(R.id.indeterminateBar)
-        // Ensure overlay buttons exist and are on top even before segmentor initializes
-        ensureStartStopButton()
-        ensureModelButton()
-        ensureOverlayButton() // keep existing Pick Video button available
-        // New: ensure Full toggle button
-        ensureFullButton()
-        // New: ensure Show toggle button (below Full)
-        ensureShowButton()
+        
+        ensureButton { btnStartStop = it }
+        ensureButton { btnModel = it }
+        ensureButton { btnFull = it }
+        ensureButton { btnShow = it }
+        
         createTFLiteClassifiersAsync()
     }
 
-    // Create/ensure the floating Start/Stop button
+    private fun applyElevation(btn: Button, elevation: Float) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            btn.elevation = elevation
+            btn.translationZ = elevation
+        }
+    }
+
+    private fun ensureButton(assign: (Button) -> Unit): Button? {
+        return null // placeholder; individual button creation follows below
+    }
+
     private fun ensureStartStopButton(): Button {
-        val root = findViewById<ViewGroup>(android.R.id.content) as FrameLayout
         if (btnStartStop != null) {
-            btnStartStop!!.visibility = View.VISIBLE
-            btnStartStop!!.bringToFront()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                btnStartStop!!.elevation = 16f
-                btnStartStop!!.translationZ = 16f
-            }
+            btnStartStop!!.apply { visibility = View.VISIBLE; bringToFront(); applyElevation(this, 16f) }
             return btnStartStop!!
         }
         val btn = Button(this).apply {
@@ -116,31 +104,17 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = false
         }
         val m = (16 * resources.displayMetrics.density).toInt()
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.END or Gravity.BOTTOM
-        ).apply { setMargins(m, m, m, m) }
-        root.addView(btn, lp)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.BOTTOM).apply { setMargins(m, m, m, m) }
+        (findViewById<ViewGroup>(android.R.id.content) as FrameLayout).addView(btn, lp)
         btn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            btn.elevation = 16f
-            btn.translationZ = 16f
-        }
+        applyElevation(btn, 16f)
         btnStartStop = btn
         return btn
     }
 
-    // Create/ensure the floating Model button
     private fun ensureModelButton(): Button {
-        val root = findViewById<ViewGroup>(android.R.id.content) as FrameLayout
         if (btnModel != null) {
-            btnModel!!.visibility = View.VISIBLE
-            btnModel!!.bringToFront()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                btnModel!!.elevation = 16f
-                btnModel!!.translationZ = 16f
-            }
+            btnModel!!.apply { visibility = View.VISIBLE; bringToFront(); applyElevation(this, 16f) }
             return btnModel!!
         }
         val btn = Button(this).apply {
@@ -150,69 +124,17 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = false
         }
         val m = (16 * resources.displayMetrics.density).toInt()
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.START or Gravity.BOTTOM
-        ).apply { setMargins(m, m, m, m) }
-        root.addView(btn, lp)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.START or Gravity.BOTTOM).apply { setMargins(m, m, m, m) }
+        (findViewById<ViewGroup>(android.R.id.content) as FrameLayout).addView(btn, lp)
         btn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            btn.elevation = 16f
-            btn.translationZ = 16f
-        }
+        applyElevation(btn, 16f)
         btnModel = btn
         return btn
     }
 
-    // Ensure we have a visible overlay button with id btn_pick_video; create it if missing
-    private fun ensureOverlayButton(): Button {
-        val existing = findViewById<Button>(R.id.btn_pick_video)
-        if (existing != null) {
-            existing.visibility = View.VISIBLE
-            // Make sure it's drawn above fragments
-            existing.bringToFront()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                existing.elevation = 16f
-                existing.translationZ = 16f
-            }
-            return existing
-        }
-        // Create an overlay button dynamically on the root content
-        val root = findViewById<ViewGroup>(android.R.id.content)
-        val btn = Button(this).apply {
-            id = R.id.btn_pick_video
-            text = "Start"
-            alpha = 0.95f
-            isAllCaps = false
-        }
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.END or Gravity.BOTTOM
-        ).apply {
-            val m = (16 * resources.displayMetrics.density).toInt()
-            setMargins(m, m, m, m)
-        }
-        (root as FrameLayout).addView(btn, lp)
-        btn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            btn.elevation = 16f
-            btn.translationZ = 16f
-        }
-        return btn
-    }
-
-    // Create/ensure the floating Full toggle button
     private fun ensureFullButton(): Button {
-        val root = findViewById<ViewGroup>(android.R.id.content) as FrameLayout
         if (btnFull != null) {
-            btnFull!!.visibility = View.VISIBLE
-            btnFull!!.bringToFront()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                btnFull!!.elevation = 18f
-                btnFull!!.translationZ = 18f
-            }
+            btnFull!!.apply { visibility = View.VISIBLE; bringToFront(); applyElevation(this, 18f) }
             return btnFull!!
         }
         val btn = Button(this).apply {
@@ -222,31 +144,17 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = false
         }
         val m = (16 * resources.displayMetrics.density).toInt()
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END
-        ).apply { setMargins(m, m, m, m) }
-        root.addView(btn, lp)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(m, m, m, m) }
+        (findViewById<ViewGroup>(android.R.id.content) as FrameLayout).addView(btn, lp)
         btn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            btn.elevation = 18f
-            btn.translationZ = 18f
-        }
+        applyElevation(btn, 18f)
         btnFull = btn
         return btn
     }
 
-    // New: Create/ensure the floating Show/Hide button placed below Full button
     private fun ensureShowButton(): Button {
-        val root = findViewById<ViewGroup>(android.R.id.content) as FrameLayout
         if (btnShow != null) {
-            btnShow!!.visibility = View.VISIBLE
-            btnShow!!.bringToFront()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                btnShow!!.elevation = 17f
-                btnShow!!.translationZ = 17f
-            }
+            btnShow!!.apply { visibility = View.VISIBLE; bringToFront(); applyElevation(this, 17f) }
             return btnShow!!
         }
         val btn = Button(this).apply {
@@ -256,27 +164,39 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = false
         }
         val m = (16 * resources.displayMetrics.density).toInt()
-        // Position below Full button by adding extra top margin (~56dp)
         val below = (56 * resources.displayMetrics.density).toInt()
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END
-        ).apply { setMargins(m, m + below, m, m) }
-        root.addView(btn, lp)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(m, m + below, m, m) }
+        (findViewById<ViewGroup>(android.R.id.content) as FrameLayout).addView(btn, lp)
         btn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            btn.elevation = 17f
-            btn.translationZ = 17f
-        }
+        applyElevation(btn, 17f)
         btnShow = btn
+        return btn
+    }
+
+    private fun ensureOverlayButton(): Button {
+        val existing = findViewById<Button>(R.id.btn_pick_video)
+        if (existing != null) {
+            existing.apply { visibility = View.VISIBLE; bringToFront(); applyElevation(this, 8f) }
+            return existing
+        }
+        val btn = Button(this).apply {
+            id = R.id.btn_pick_video
+            text = "Start"
+            alpha = 0.95f
+            isAllCaps = false
+        }
+        val m = (16 * resources.displayMetrics.density).toInt()
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.BOTTOM).apply { setMargins(m, m, m, m) }
+        (findViewById<ViewGroup>(android.R.id.content) as FrameLayout).addView(btn, lp)
+        btn.bringToFront()
+        applyElevation(btn, 8f)
         return btn
     }
 
     private fun applyFullModeToRender() {
         findViewById<FragmentRender>(R.id.fragmentRender)?.setFullMode(isFullMode)
     }
-    // New: forward show/hide to renderer
+
     private fun applyShowModeToRender() {
         findViewById<FragmentRender>(R.id.fragmentRender)?.setShowInference(isShowInference)
     }
@@ -318,51 +238,33 @@ class MainActivity : AppCompatActivity() {
         setLoadingUI(true)
         backgroundExecutor.execute {
             try {
-                // Close previous segmentor if present
-                try { segmentor?.close() } catch (_: Exception) {}
-                segmentor = null
+                segmentor?.close()
+            } catch (_: Exception) {}
+            segmentor = null
 
-                // Resolve model asset: user-selected or default
-                val tfLiteModelAsset = selectedModelAsset ?: resources.getString(R.string.tfLiteModelAsset)
-
-                // Choose delegates based on environment: QNN+GPU on real device, GPU/CPU on emulator
-                val delegates = if (isProbablyEmulator()) {
-                    AIHubDefaults.delegatePriorityOrderForDelegates(setOf(TFLiteHelpers.DelegateType.GPUv2))
-                } else {
-                    AIHubDefaults.delegatePriorityOrderForDelegates(AIHubDefaults.enabledDelegates)
-                }
-                segmentor = TfLiteSegmentor(
-                    context = this,
-                    modelPath = tfLiteModelAsset,
-                    delegatePriorityOrder = delegates
-                )
-            } catch (e: IOException) {
-                throw RuntimeException(e.message)
-            } catch (e: NoSuchAlgorithmException) {
-                throw RuntimeException(e.message)
+            val tfLiteModelAsset = selectedModelAsset ?: resources.getString(R.string.tfLiteModelAsset)
+            val delegates = if (isProbablyEmulator()) {
+                AIHubDefaults.delegatePriorityOrderForDelegates(setOf(TFLiteHelpers.DelegateType.GPUv2))
+            } else {
+                AIHubDefaults.delegatePriorityOrderForDelegates(AIHubDefaults.enabledDelegates)
             }
+            
+            segmentor = TfLiteSegmentor(this, tfLiteModelAsset, delegates)
             setLoadingUI(false)
+            
             mainHandler.post {
                 val seg = segmentor ?: return@post
                 updateActiveFragmentWithSegmentor(seg)
-                // Ensure Full button exists and current mode applied
-                ensureFullButton()
-                ensureShowButton()
-                applyFullModeToRender()
-                applyShowModeToRender()
-
-                // Cache camera availability for UI logic (deferred check)
                 hasExtCam = hasExternalCamera()
-
+                
                 if (supportFragmentManager.findFragmentById(R.id.main_content) == null) {
                     if (isProbablyEmulator()) {
                         pickVideo.launch("video/*")
                     } else if (hasExtCam || detectUvcVideoDevices().isNotEmpty()) {
                         configureMainButton()
-                        // Don't show toast here; wait until user actually presses Start
                     } else {
                         configureMainButton()
-                        Toast.makeText(this, "Pick a video to run segmentation.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "Pick a video to run segmentation.", Toast.LENGTH_LONG).show()
                     }
                 } else {
                     configureMainButton()
@@ -371,21 +273,56 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Configure overlay buttons every time state changes
-    private fun configureMainButton() {
-        // Start/Stop button: always visible (unless in full mode)
-        val startStop = ensureStartStopButton()
-        startStop.visibility = View.VISIBLE
-        startStop.isClickable = true
-        startStop.isFocusable = true
-        startStop.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            startStop.elevation = 16f
-            startStop.translationZ = 16f
+    private fun ensureInitButton(): Button {
+        if (btnInit != null) {
+            btnInit!!.apply { visibility = View.VISIBLE; bringToFront(); applyElevation(this, 17f) }
+            return btnInit!!
         }
-        // Long press also opens model picker
-        startStop.setOnLongClickListener { showModelPicker(); true }
+        val btn = Button(this).apply {
+            id = View.generateViewId()
+            text = "Init"
+            alpha = 0.95f
+            isAllCaps = false
+        }
+        val m = (16 * resources.displayMetrics.density).toInt()
+        val initOffset = (56 * 2 * resources.displayMetrics.density).toInt()  // Below Hide button
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(m, m + initOffset, m, m) }
+        (findViewById<ViewGroup>(android.R.id.content) as FrameLayout).addView(btn, lp)
+        btn.bringToFront()
+        applyElevation(btn, 17f)
+        btnInit = btn
+        return btn
+    }
 
+    private fun ensureLicenseButton(): Button {
+        if (btnLicense != null) {
+            btnLicense!!.apply { visibility = View.VISIBLE; bringToFront(); applyElevation(this, 16f) }
+            return btnLicense!!
+        }
+        val btn = Button(this).apply {
+            id = View.generateViewId()
+            text = "License"
+            alpha = 0.95f
+            isAllCaps = false
+            textSize = 12f
+        }
+        val m = (16 * resources.displayMetrics.density).toInt()
+        val licenseOffset = (56 * 3 * resources.displayMetrics.density).toInt()  // Below Init button
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(m, m + licenseOffset, m, m) }
+        (findViewById<ViewGroup>(android.R.id.content) as FrameLayout).addView(btn, lp)
+        btn.bringToFront()
+        applyElevation(btn, 16f)
+        btnLicense = btn
+        return btn
+    }
+
+    private fun configureMainButton() {
+        val startStop = ensureStartStopButton().apply {
+            visibility = View.VISIBLE
+            isClickable = true
+            setOnLongClickListener { showModelPicker(); true }
+        }
+        
         if (isUsbRunning) {
             startStop.text = "Stop"
             startStop.setOnClickListener { stopUsbAndExit() }
@@ -394,110 +331,115 @@ class MainActivity : AppCompatActivity() {
             startStop.setOnClickListener { startUsb() }
         }
 
-        // Model button: opens model picker
-        val modelBtn = ensureModelButton()
-        modelBtn.visibility = View.VISIBLE
-        modelBtn.setOnClickListener { showModelPicker() }
-        modelBtn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            modelBtn.elevation = 16f
-            modelBtn.translationZ = 16f
+        ensureModelButton().apply {
+            visibility = View.VISIBLE
+            setOnClickListener { showModelPicker() }
         }
 
-        // Keep Pick Video button (if in layout) working as before
-        findViewById<Button>(R.id.btn_pick_video)?.apply {
+        ensureOverlayButton().apply {
             visibility = View.VISIBLE
             setOnClickListener { pickVideo.launch("video/*") }
-            bringToFront()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                elevation = 8f
-                translationZ = 8f
+        }
+
+        ensureFullButton().apply {
+            visibility = View.VISIBLE
+            text = if (isFullMode) "Exit Full" else "Full"
+            setOnClickListener {
+                isFullMode = !isFullMode
+                text = if (isFullMode) "Exit Full" else "Full"
+                toggleOverlayButtonsVisibility()
+                applyFullModeToRender()
             }
         }
 
-        // Full button behavior
-        val fullBtn = ensureFullButton()
-        fullBtn.visibility = View.VISIBLE
-        fullBtn.text = if (isFullMode) "Exit Full" else "Full"
-        fullBtn.setOnClickListener {
-            isFullMode = !isFullMode
-            fullBtn.text = if (isFullMode) "Exit Full" else "Full"
-            // Hide other overlay buttons in full mode; show them otherwise
-            val vStart = btnStartStop
-            val vModel = btnModel
-            val vPick = findViewById<Button>(R.id.btn_pick_video)
-            if (isFullMode) {
-                vStart?.visibility = View.GONE
-                vModel?.visibility = View.GONE
-                vPick?.visibility = View.GONE
-            } else {
-                vStart?.visibility = View.VISIBLE
-                vModel?.visibility = View.VISIBLE
-                vPick?.visibility = View.VISIBLE
-                configureMainButton() // refresh callbacks/labels
+        ensureShowButton().apply {
+            visibility = View.VISIBLE
+            text = if (isShowInference) "Hide" else "Show"
+            setOnClickListener {
+                isShowInference = !isShowInference
+                text = if (isShowInference) "Hide" else "Show"
+                applyShowModeToRender()
             }
-            applyFullModeToRender()
-        }
-        fullBtn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            fullBtn.elevation = 18f
-            fullBtn.translationZ = 18f
         }
 
-        // New: Show/Hide inference button behavior (kept visible in full mode)
-        val showBtn = ensureShowButton()
-        showBtn.visibility = View.VISIBLE
-        showBtn.text = if (isShowInference) "Hide" else "Show"
-        showBtn.setOnClickListener {
-            isShowInference = !isShowInference
-            showBtn.text = if (isShowInference) "Hide" else "Show"
-            applyShowModeToRender()
-        }
-        showBtn.bringToFront()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            showBtn.elevation = 17f
-            showBtn.translationZ = 17f
+        // NEW: Init button
+        ensureInitButton().apply {
+            visibility = View.VISIBLE
+            setOnClickListener {
+                initializeBBox()
+            }
         }
 
-        // Apply current states to renderer
-        applyShowModeToRender()
-        applyFullModeToRender()
-
-        // When in full mode, hide other buttons but KEEP show/hide visible
-        if (isFullMode) {
-            btnStartStop?.visibility = View.GONE
-            btnModel?.visibility = View.GONE
-            findViewById<Button>(R.id.btn_pick_video)?.visibility = View.GONE
-            // btnShow remains visible to allow toggling while maintaining full-mode size
-        } else {
-            btnShow?.visibility = View.VISIBLE
+        // NEW: License button
+        ensureLicenseButton().apply {
+            visibility = View.VISIBLE
+            setOnClickListener {
+                showLicenseDialog()
+            }
         }
+
+        toggleOverlayButtonsVisibility()
+    }
+
+    private fun showLicenseDialog() {
+        try {
+            val licenseText = assets.open("LICENSE.txt").bufferedReader().use { it.readText() }
+            val modificationHeader = "This work has been modified for real-time brachial plexus segmentation task.\n\n"
+            
+            val scrollView = android.widget.ScrollView(this).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    (400 * resources.displayMetrics.density).toInt()
+                )
+            }
+            
+            val textView = android.widget.TextView(this).apply {
+                text = modificationHeader + licenseText
+                textSize = 10f
+                setPadding(16, 16, 16, 16)
+                setTextIsSelectable(true)
+            }
+            
+            scrollView.addView(textView)
+            
+            AlertDialog.Builder(this)
+                .setTitle("License")
+                .setView(scrollView)
+                .setPositiveButton("OK", null)
+                .show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not load license file: ${e.message}", Toast.LENGTH_SHORT).show()
+            Log.e("MainActivity", "Error loading license", e)
+        }
+    }
+
+    private fun initializeBBox() {
+        val frag = supportFragmentManager.findFragmentById(R.id.main_content)
+        when (frag) {
+            is UsbCameraFragment -> frag.requestBBoxInit()
+            is VideoFileFragment -> frag.requestBBoxInit()
+        }
+    }
+
+    private fun toggleOverlayButtonsVisibility() {
+        val visibility = if (isFullMode) View.GONE else View.VISIBLE
+        btnStartStop?.visibility = visibility
+        btnModel?.visibility = visibility
+        btnInit?.visibility = visibility
+        btnLicense?.visibility = visibility  // NEW
+        findViewById<Button>(R.id.btn_pick_video)?.visibility = visibility
     }
 
     private fun startUsb() {
         val seg = segmentor ?: return
         isUsbRunning = true
-        isUsbCameraConnected = false
         supportFragmentManager.commit { replace(R.id.main_content, UsbCameraFragment.create(seg)) }
         mainHandler.post {
             (supportFragmentManager.findFragmentById(R.id.main_content) as? UsbCameraFragment)?.startManually()
-            configureMainButton() // refresh label to Stop
+            configureMainButton()
+            applyFullModeToRender()
         }
-        // Ensure renderer picks up current full mode
-        mainHandler.post { applyFullModeToRender() }
         Toast.makeText(this, "Searching for USB camera...", Toast.LENGTH_SHORT).show()
-    }
-
-    // Public method called by UsbCameraFragment when camera successfully connects
-    fun onUsbCameraConnected() {
-        isUsbCameraConnected = true
-    }
-
-    // Public method called by UsbCameraFragment when camera fails to connect
-    fun onUsbCameraFailed(errorMsg: String) {
-        if (isUsbRunning && !isUsbCameraConnected) {
-            Toast.makeText(this, "Failed to connect USB camera: $errorMsg", Toast.LENGTH_LONG).show()
-        }
     }
 
     private fun stopUsbAndExit() {
@@ -507,30 +449,33 @@ class MainActivity : AppCompatActivity() {
             supportFragmentManager.commit { remove(frag) }
         }
         isUsbRunning = false
-        configureMainButton() // refresh label to Start
-        // Ensure renderer picks up current full mode (likely false)
+        configureMainButton()
         applyFullModeToRender()
-        // Ensure renderer picks up current show/hide state
         applyShowModeToRender()
         Toast.makeText(this, "Stopped USB inference.", Toast.LENGTH_SHORT).show()
+    }
+
+    // Callbacks invoked by UsbCameraFragment
+    fun onUsbCameraConnected() {}
+    fun onUsbCameraFailed(errorMsg: String) {
+        if (isUsbRunning) {
+            Toast.makeText(this, "Failed to connect USB camera: $errorMsg", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun updateActiveFragmentWithSegmentor(seg: TfLiteSegmentor) {
         when (val frag = supportFragmentManager.findFragmentById(R.id.main_content)) {
             is UsbCameraFragment -> frag.setSegmentor(seg)
             is VideoFileFragment -> frag.setSegmentor(seg)
-            is ScreenCaptureFragment -> frag.setSegmentor(seg)
         }
     }
 
     private fun showModelPicker() {
-        val allFiles: Array<String> = try {
-            assets.list("") ?: emptyArray<String>()
+        val models = try {
+            assets.list("")?.filter { it.endsWith(".tflite") || it.endsWith(".bin") }?.sorted()?.toTypedArray() ?: emptyArray()
         } catch (_: Exception) { 
-            emptyArray<String>()
+            emptyArray()
         }
-        
-        val models = allFiles.filter { it.endsWith(".tflite") || it.endsWith(".bin") }.sorted().toTypedArray()
 
         if (models.isEmpty()) {
             Toast.makeText(this, "No models found in assets.", Toast.LENGTH_SHORT).show()
@@ -540,12 +485,12 @@ class MainActivity : AppCompatActivity() {
         val current = selectedModelAsset ?: runCatching { resources.getString(R.string.tfLiteModelAsset) }.getOrNull()
         val preselect = models.indexOfFirst { it == current }.coerceAtLeast(0)
 
-        val dialog = AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("Select model")
-            .setSingleChoiceItems(models, preselect) { dialogInterface, which ->
+            .setSingleChoiceItems(models, preselect) { dialog, which ->
                 selectedModelAsset = models[which]
                 Toast.makeText(this, "Loading: ${models[which]}", Toast.LENGTH_SHORT).show()
-                dialogInterface.dismiss()
+                dialog.dismiss()
                 createTFLiteClassifiersAsync()
             }
             .setNegativeButton("Cancel", null)
@@ -588,19 +533,6 @@ class MainActivity : AppCompatActivity() {
                 cm.getCameraCharacteristics(id).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_EXTERNAL
             }
         } catch (e: Exception) { false }
-    }
-
-    private fun listCamera2DevicesForDebug() {
-        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        try {
-            for (id in cm.cameraIdList) {
-                val chars = cm.getCameraCharacteristics(id)
-                val facing = chars.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)
-                Log.i("SemanticSeg", "Camera2 device id=$id facing=${facing}")
-            }
-        } catch (e: Exception) {
-            Log.e("SemanticSeg", "Error listing Camera2 devices: ${e.message}")
-        }
     }
 
     private fun detectUvcVideoDevices(): List<UsbDevice> {

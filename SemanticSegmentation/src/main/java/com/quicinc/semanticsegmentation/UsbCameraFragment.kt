@@ -1,16 +1,12 @@
 package com.quicinc.semanticsegmentation
 
-import android.Manifest
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
-import android.util.DisplayMetrics
 import android.util.Log
 import android.view.*
 import android.view.TextureView
@@ -71,6 +67,7 @@ class UsbCameraFragment : Fragment() {
         try {
             val bmp = convertFrameToBitmap(frame) ?: return@IFrameCallback
             fragmentRender.updateReferenceSize(bmp.width, bmp.height)
+            
             val pre = fragmentRender.getCroppedBitmapWithRect(bmp)?.let { (cropped, rect) ->
                 seg.preprocess(cropped, 0, originalForDisplay = bmp, cropRectInOriginal = rect)
             } ?: seg.preprocess(bmp, 0, originalForDisplay = bmp, cropRectInOriginal = null)
@@ -350,6 +347,7 @@ class UsbCameraFragment : Fragment() {
     fun startManually() {
         if (pipelineRunning && uvcCamera != null) return
         hiddenState = null
+        fragmentRender.resetBBoxInitialization()  // Reset bbox for new session
         if (backgroundThread == null) startBackgroundThread()
         startPipeline()
         mainHandler.postDelayed({
@@ -375,5 +373,19 @@ class UsbCameraFragment : Fragment() {
         hiddenState = null
         stopPipeline()
         if (wasRunning) startPipeline()
+    }
+
+    fun requestBBoxInit() {
+        // Get current frame's original bitmap and init bbox
+        latestPre.get()?.originalForDisplay?.let { bmp ->
+            fragmentRender.post {
+                val success = fragmentRender.initializeBBoxFromOriginal(bmp)
+                if (success) {
+                    android.widget.Toast.makeText(requireContext(), "BBox initialized", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    android.widget.Toast.makeText(requireContext(), "Failed to detect contour", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 }
