@@ -1,6 +1,12 @@
-# Real-time Brachial Plexus Video Segmentation (TF Lite + QNN)
+# Real-time Brachial Plexus Video Segmentation
 
 This app performs real-time video segmentation of the brachial plexus on live ultrasound input. It showcases streaming camera capture, TensorFlow Lite inference, and OpenCV visualization, with acceleration on Qualcomm Hexagon NPU via the TF Lite QNN delegate. The pretrained model is best suited with Sonosite ultrasound machine.
+
+## Video demo
+
+https://github.com/user-attachments/assets/e5cae33d-6d8e-4ec0-b694-02eec4703e71
+
+I feel sorry that not much is documented. I'll keep updating this.
 
 ## Build the APK
 
