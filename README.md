@@ -18,8 +18,6 @@ I feel sorry that not much is documented. I'll keep updating this.
 
 ## License
 
-This app is released under the [BSD-3 License](LICENSE).
-
-The QNN SDK dependency is also released under a separate license. Please refer to the LICENSE file downloaded with the SDK for details.
+This app is released under the BSD-3 License and has basis on [Qualcomm AI hub apps](https://github.com/quic/ai-hub-apps). The QNN SDK dependency is also released under a separate license. Please refer to the LICENSE file downloaded with the SDK for details.
 
 Note: The app performs argmax and overlays colored masks on the live preview.
