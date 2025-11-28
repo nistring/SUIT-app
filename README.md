@@ -5,9 +5,9 @@ This app performs real-time video segmentation of the brachial plexus on live ul
 ## Build the APK
 
 1. Obtain a compatible `.tflite` model:
-   - Export from the training repo and compile via AI Hub using [../Video-object-segmentation-for-SUIT/deploy/export.py](../Video-object-segmentation-for-SUIT/deploy/export.py). Or download pretrained weights from (To be).
+   - Export from the training repo and compile via AI Hub using [../Video-object-segmentation-for-SUIT/deploy/export.py](https://github.com/nistring/Hierarchical-Temporal-BP-Seg/blob/master/deploy/export.py). Or download pretrained weights from (To be).
 2. Copy the `.tflite` file to `src/main/assets/<your_model>.tflite`.
-3. In [../gradle.properties](../gradle.properties), set `semanticsegmentation_tfLiteModelAsset=<your_model>.tflite`.
+3. In `graddle.properties`, set `semanticsegmentation_tfLiteModelAsset=<your_model>.tflite`.
 4. Open the parent Android project (the `android` root, not this subfolder) in Android Studio, run Gradle sync, and build the `SemanticSegmentation` target.
 
 ## License
