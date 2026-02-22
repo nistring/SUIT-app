@@ -34,11 +34,6 @@ android {
 
     // Helper sources are colocated under this module's java/ directory
 
-    preBuild.doFirst {
-        if (!file("./src/main/assets/" + project.properties["semanticsegmentation_tfLiteModelAsset"]).exists()) {
-            throw new RuntimeException(missingModelErrorMsg)
-        }
-    }
 
     packaging {
         resources {

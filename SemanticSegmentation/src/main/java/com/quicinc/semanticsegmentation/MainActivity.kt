@@ -78,7 +78,7 @@ class MainActivity : AppCompatActivity() {
         ensureButton { btnFull = it }
         ensureButton { btnShow = it }
         
-        createTFLiteClassifiersAsync()
+        downloadWeightsIfNeeded { createTFLiteClassifiersAsync() }
     }
 
     private fun applyElevation(btn: Button, elevation: Float) {
@@ -228,6 +228,34 @@ class MainActivity : AppCompatActivity() {
         if (hasFocus) {
             enterImmersiveMode()
         }
+    }
+
+    private fun downloadWeightsIfNeeded(onComplete: () -> Unit) {
+        val device = (Build.DEVICE ?: "").lowercase()
+        val url = when {
+            "gts8" in device -> "https://drive.google.com/uc?export=download&id=1AAqiqXwA-a_oKZrhRsAQWBSsqwe58QJU"
+            "gts9" in device -> "https://drive.google.com/uc?export=download&id=1EjWHqzsinD8yNrnNN0l98nD8UFJyfRZW"
+            else -> { onComplete(); return }
+        }
+        val dest = java.io.File(filesDir, "SegFormerB0_ReLU.tflite")
+        if (dest.exists()) { onComplete(); return }
+        AlertDialog.Builder(this)
+            .setTitle("Download Model")
+            .setMessage("Device-specific model weights need to be downloaded (~19 MB). Proceed?")
+            .setPositiveButton("Download") { _, _ ->
+                setLoadingUI(true)
+                backgroundExecutor.execute {
+                    try {
+                        java.net.URL(url).openStream().use { inp -> dest.outputStream().use { inp.copyTo(it) } }
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Weight download failed", e)
+                    }
+                    mainHandler.post { onComplete() }
+                }
+            }
+            .setNegativeButton("Cancel") { _, _ -> onComplete() }
+            .setCancelable(false)
+            .show()
     }
 
     private fun setLoadingUI(loading: Boolean) {
@@ -471,14 +499,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showModelPicker() {
-        val models = try {
-            assets.list("")?.filter { it.endsWith(".tflite") || it.endsWith(".bin") }?.sorted()?.toTypedArray() ?: emptyArray()
-        } catch (_: Exception) { 
-            emptyArray()
-        }
+        val assetModels = try {
+            assets.list("")?.filter { it.endsWith(".tflite") || it.endsWith(".bin") } ?: emptyList()
+        } catch (_: Exception) { emptyList() }
+        val localModels = filesDir.listFiles()?.filter { it.extension in listOf("tflite", "bin") }?.map { it.name } ?: emptyList()
+        val models = (assetModels + localModels).distinct().sorted().toTypedArray()
 
         if (models.isEmpty()) {
-            Toast.makeText(this, "No models found in assets.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No models found.", Toast.LENGTH_SHORT).show()
             return
         }
 

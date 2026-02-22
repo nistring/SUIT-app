@@ -223,6 +223,24 @@ public class TFLiteHelpers {
         return new Pair<>(buffer, hash);
     }
 
+    public static Pair<MappedByteBuffer, String> loadModelFromFile(java.io.File modelFile)
+            throws IOException, NoSuchAlgorithmException {
+        try (FileInputStream inputStream = new FileInputStream(modelFile)) {
+            FileChannel fileChannel = inputStream.getChannel();
+            MappedByteBuffer buffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, modelFile.length());
+            MessageDigest hashDigest = MessageDigest.getInstance("MD5");
+            try (DigestInputStream dis = new DigestInputStream(new FileInputStream(modelFile), hashDigest)) {
+                byte[] data = new byte[8192];
+                while (dis.read(data) != -1) {}
+            }
+            StringBuilder hex = new StringBuilder();
+            for (byte b : hashDigest.digest()) {
+                hex.append(String.format("%02x", b));
+            }
+            return new Pair<>(buffer, hex.toString());
+        }
+    }
+
     /**
      * @param delegateType     The type of delegate to create.
      * @param nativeLibraryDir Native library directory for Android app.

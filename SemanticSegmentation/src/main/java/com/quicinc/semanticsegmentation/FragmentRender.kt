@@ -277,8 +277,6 @@ class FragmentRender(context: Context, attrs: AttributeSet?) : View(context, att
                 val topY = mTargetRect.bottom - 150f
                 canvas.drawText("Producer: ${String.format("%.0f", producerTime / 1_000_000f)}ms", 10f, topY, mTextColor)
                 canvas.drawText("Consumer: ${String.format("%.0f", consumerTime / 1_000_000f)}ms", 10f, topY + 50f, mTextColor)
-                canvas.drawText("Brachial plexus segmentation", 10f, 50f, mTextColor)
-                canvas.drawText("by Donghyeon Baek", 10f, 100f, mTextColor)
             }
         }
         mLock.unlock()

@@ -59,7 +59,9 @@ class TfLiteSegmentor(
         val cvReady = try { OpenCVLoader.initDebug() } catch (_: Throwable) { false }
         if (!cvReady) System.loadLibrary("opencv_java4")
 
-        val modelAndHash = TFLiteHelpers.loadModelFile(context.assets, modelPath)
+        val localFile = java.io.File(context.filesDir, modelPath)
+        val modelAndHash = if (localFile.exists()) TFLiteHelpers.loadModelFromFile(localFile)
+            else TFLiteHelpers.loadModelFile(context.assets, modelPath)
         val iResult = TFLiteHelpers.CreateInterpreterAndDelegatesFromOptions(
             modelAndHash.first,
             delegatePriorityOrder,
