@@ -14,11 +14,13 @@ android {
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         resValue("string", "tfLiteModelAsset", project.properties['semanticsegmentation_tfLiteModelAsset'])
+        ndk { abiFilters 'arm64-v8a' }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -38,6 +40,12 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/**"
+            excludes += "lib/**/ffmpeg"
+            excludes += "lib/**/ffprobe"
+        }
+        jniLibs {
+            excludes += "**/ffmpeg"
+            excludes += "**/ffprobe"
         }
     }
 
@@ -45,6 +53,10 @@ android {
     packagingOptions {
         pickFirst 'lib/arm64-v8a/libc++_shared.so'
         pickFirst 'lib/armeabi-v7a/libc++_shared.so'
+        exclude 'lib/arm64-v8a/ffmpeg'
+        exclude 'lib/arm64-v8a/ffprobe'
+        exclude 'lib/armeabi-v7a/ffmpeg'
+        exclude 'lib/armeabi-v7a/ffprobe'
     }
 }
 
@@ -65,12 +77,12 @@ dependencies {
     // Keep Android OpenCV (used by TfLiteSegmentor's org.opencv.android.Utils)
     implementation 'org.opencv:opencv:4.10.0'
 
-    // Use javacv-platform but exclude its OpenCV presets to avoid duplicate OpenCV versions
-    implementation('org.bytedeco:javacv-platform:1.5.8') {
-        // Remove javacv's bundled OpenCV to prevent duplicate-version conflicts with org.opencv:opencv
+    // JavaCV: only FFmpegFrameGrabber + AndroidFrameConverter, arm64 native only
+    implementation('org.bytedeco:javacv:1.5.8') {
         exclude group: 'org.bytedeco', module: 'opencv'
-        exclude group: 'org.bytedeco', module: 'opencv-platform'
     }
+    implementation 'org.bytedeco:javacpp:1.5.8:android-arm64'
+    implementation 'org.bytedeco:ffmpeg:5.1.2-1.5.8:android-arm64'
     implementation(project(":libuvccamera"))
 }
 
