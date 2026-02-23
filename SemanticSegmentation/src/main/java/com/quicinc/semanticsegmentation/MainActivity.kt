@@ -4,6 +4,8 @@
 // ---------------------------------------------------------------------
 package com.quicinc.semanticsegmentation
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
 import android.os.Handler
@@ -23,6 +25,7 @@ import android.hardware.usb.UsbConstants
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.commit
 import com.quicinc.tflite.AIHubDefaults
 import com.quicinc.tflite.TFLiteHelpers
@@ -46,6 +49,10 @@ class MainActivity : AppCompatActivity() {
         } else {
             Toast.makeText(this, "No video selected.", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private val requestCameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        onCameraPermissionResult(granted)
     }
     
     private var selectedModelAsset: String? = null
@@ -72,12 +79,40 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterImmersiveMode()
         progressBar = findViewById(R.id.indeterminateBar)
-        
+
         ensureButton { btnStartStop = it }
         ensureButton { btnModel = it }
         ensureButton { btnFull = it }
         ensureButton { btnShow = it }
-        
+
+        checkPermissionsAndStart()
+    }
+
+    private fun checkPermissionsAndStart() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            proceedAfterPermissions()
+        } else {
+            requestCameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun onCameraPermissionResult(granted: Boolean) {
+        if (granted) {
+            proceedAfterPermissions()
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("Camera Permission Required")
+                .setMessage("This app needs camera access for real-time segmentation. You can still use video file mode without camera permission.")
+                .setPositiveButton("Continue without camera") { _, _ -> proceedAfterPermissions() }
+                .setNegativeButton("Grant Permission") { _, _ ->
+                    requestCameraPermission.launch(Manifest.permission.CAMERA)
+                }
+                .setCancelable(false)
+                .show()
+        }
+    }
+
+    private fun proceedAfterPermissions() {
         downloadWeightsIfNeeded { createTFLiteClassifiersAsync() }
     }
 
@@ -232,10 +267,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun downloadWeightsIfNeeded(onComplete: () -> Unit) {
         val device = (Build.DEVICE ?: "").lowercase()
+        val defaultUrl = "https://drive.google.com/uc?export=download&id=1AAqiqXwA-a_oKZrhRsAQWBSsqwe58QJU"
         val url = when {
-            "gts8" in device -> "https://drive.google.com/uc?export=download&id=1AAqiqXwA-a_oKZrhRsAQWBSsqwe58QJU"
+            "gts8" in device -> defaultUrl
             "gts9" in device -> "https://drive.google.com/uc?export=download&id=1EjWHqzsinD8yNrnNN0l98nD8UFJyfRZW"
-            else -> { onComplete(); return }
+            else -> defaultUrl
         }
         val dest = java.io.File(filesDir, "SegFormerB0_ReLU.tflite")
         if (dest.exists()) { onComplete(); return }
@@ -271,31 +307,58 @@ class MainActivity : AppCompatActivity() {
             segmentor = null
 
             val tfLiteModelAsset = selectedModelAsset ?: resources.getString(R.string.tfLiteModelAsset)
+
+            // Build delegate list: try full acceleration first, fall back gracefully
             val delegates = if (isProbablyEmulator()) {
                 AIHubDefaults.delegatePriorityOrderForDelegates(setOf(TFLiteHelpers.DelegateType.GPUv2))
             } else {
                 AIHubDefaults.delegatePriorityOrderForDelegates(AIHubDefaults.enabledDelegates)
             }
-            
-            segmentor = TfLiteSegmentor(this, tfLiteModelAsset, delegates)
+
+            try {
+                segmentor = TfLiteSegmentor(this, tfLiteModelAsset, delegates)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to create segmentor with default delegates", e)
+                // Retry with CPU-only (empty delegate set forces XNNPack fallback)
+                try {
+                    val cpuOnly = AIHubDefaults.delegatePriorityOrderForDelegates(emptySet())
+                    segmentor = TfLiteSegmentor(this, tfLiteModelAsset, cpuOnly)
+                    mainHandler.post {
+                        Toast.makeText(this@MainActivity,
+                            "NPU/GPU acceleration unavailable. Running on CPU (slower performance).",
+                            Toast.LENGTH_LONG).show()
+                    }
+                } catch (e2: Exception) {
+                    Log.e("MainActivity", "Failed to create segmentor even with CPU fallback", e2)
+                    mainHandler.post {
+                        setLoadingUI(false)
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Model Initialization Failed")
+                            .setMessage("Could not load the segmentation model on this device.\n\nError: ${e2.message}")
+                            .setPositiveButton("Retry") { _, _ -> createTFLiteClassifiersAsync() }
+                            .setNegativeButton("Pick another model") { _, _ -> showModelPicker() }
+                            .setNeutralButton("Exit") { _, _ -> finish() }
+                            .setCancelable(false)
+                            .show()
+                    }
+                    return@execute
+                }
+            }
+
             setLoadingUI(false)
-            
+
             mainHandler.post {
                 val seg = segmentor ?: return@post
                 updateActiveFragmentWithSegmentor(seg)
                 hasExtCam = hasExternalCamera()
-                
+
+                configureMainButton()
                 if (supportFragmentManager.findFragmentById(R.id.main_content) == null) {
                     if (isProbablyEmulator()) {
                         pickVideo.launch("video/*")
-                    } else if (hasExtCam || detectUvcVideoDevices().isNotEmpty()) {
-                        configureMainButton()
-                    } else {
-                        configureMainButton()
+                    } else if (!hasExtCam && detectUvcVideoDevices().isEmpty()) {
                         Toast.makeText(this@MainActivity, "Pick a video to run segmentation.", Toast.LENGTH_LONG).show()
                     }
-                } else {
-                    configureMainButton()
                 }
             }
         }

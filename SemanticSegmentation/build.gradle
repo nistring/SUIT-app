@@ -10,8 +10,8 @@ android {
         applicationId "com.quicinc.semanticsegmentation"
         minSdk Integer.valueOf(androidMinSDK)
         targetSdk Integer.valueOf(androidTargetSDK)
-        versionCode 1
-        versionName "1.0"
+        versionCode 3
+        versionName "1.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         resValue("string", "tfLiteModelAsset", project.properties['semanticsegmentation_tfLiteModelAsset'])
         ndk { abiFilters 'arm64-v8a' }
